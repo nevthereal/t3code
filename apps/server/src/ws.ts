@@ -13,6 +13,7 @@ import { GitManager } from "./git/Services/GitManager";
 import { Keybindings } from "./keybindings";
 import { Open, resolveAvailableEditors } from "./open";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
+import { TerminalManager } from "./terminal/Services/Manager";
 import { resolveWorkspaceWritePath, searchWorkspaceEntries } from "./workspaceEntries";
 
 const WsRpcLayer = WsRpcGroup.toLayer({
@@ -135,6 +136,36 @@ const WsRpcLayer = WsRpcGroup.toLayer({
     Effect.gen(function* () {
       const git = yield* GitCore;
       return yield* git.initRepo(input);
+    }),
+  [WS_METHODS.terminalOpen]: (input) =>
+    Effect.gen(function* () {
+      const terminalManager = yield* TerminalManager;
+      return yield* terminalManager.open(input);
+    }),
+  [WS_METHODS.terminalWrite]: (input) =>
+    Effect.gen(function* () {
+      const terminalManager = yield* TerminalManager;
+      return yield* terminalManager.write(input);
+    }),
+  [WS_METHODS.terminalResize]: (input) =>
+    Effect.gen(function* () {
+      const terminalManager = yield* TerminalManager;
+      return yield* terminalManager.resize(input);
+    }),
+  [WS_METHODS.terminalClear]: (input) =>
+    Effect.gen(function* () {
+      const terminalManager = yield* TerminalManager;
+      return yield* terminalManager.clear(input);
+    }),
+  [WS_METHODS.terminalRestart]: (input) =>
+    Effect.gen(function* () {
+      const terminalManager = yield* TerminalManager;
+      return yield* terminalManager.restart(input);
+    }),
+  [WS_METHODS.terminalClose]: (input) =>
+    Effect.gen(function* () {
+      const terminalManager = yield* TerminalManager;
+      return yield* terminalManager.close(input);
     }),
 });
 

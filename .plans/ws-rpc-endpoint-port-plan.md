@@ -56,12 +56,12 @@ Legend: `[x]` done, `[ ]` not started.
 
 ### Phase 4: Terminal lifecycle + IO (stateful and streaming-adjacent)
 
-- [ ] `terminal.open`
-- [ ] `terminal.write`
-- [ ] `terminal.resize`
-- [ ] `terminal.clear`
-- [ ] `terminal.restart`
-- [ ] `terminal.close`
+- [x] `terminal.open`
+- [x] `terminal.write`
+- [x] `terminal.resize`
+- [x] `terminal.clear`
+- [x] `terminal.restart`
+- [x] `terminal.close`
 
 ### Phase 5: Orchestration RPC methods (domain-critical path)
 

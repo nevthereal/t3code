@@ -34,6 +34,16 @@ import {
   ProjectWriteFileResult,
 } from "./project";
 import { ServerConfig, ServerUpsertKeybindingInput, ServerUpsertKeybindingResult } from "./server";
+import {
+  TerminalClearInput,
+  TerminalCloseInput,
+  TerminalError,
+  TerminalOpenInput,
+  TerminalResizeInput,
+  TerminalRestartInput,
+  TerminalSessionSnapshot,
+  TerminalWriteInput,
+} from "./terminal";
 import { WS_METHODS } from "./ws";
 
 export const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
@@ -126,6 +136,38 @@ export const WsGitInitRpc = Rpc.make(WS_METHODS.gitInit, {
   error: GitCommandError,
 });
 
+export const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
+  payload: TerminalOpenInput,
+  success: TerminalSessionSnapshot,
+  error: TerminalError,
+});
+
+export const WsTerminalWriteRpc = Rpc.make(WS_METHODS.terminalWrite, {
+  payload: TerminalWriteInput,
+  error: TerminalError,
+});
+
+export const WsTerminalResizeRpc = Rpc.make(WS_METHODS.terminalResize, {
+  payload: TerminalResizeInput,
+  error: TerminalError,
+});
+
+export const WsTerminalClearRpc = Rpc.make(WS_METHODS.terminalClear, {
+  payload: TerminalClearInput,
+  error: TerminalError,
+});
+
+export const WsTerminalRestartRpc = Rpc.make(WS_METHODS.terminalRestart, {
+  payload: TerminalRestartInput,
+  success: TerminalSessionSnapshot,
+  error: TerminalError,
+});
+
+export const WsTerminalCloseRpc = Rpc.make(WS_METHODS.terminalClose, {
+  payload: TerminalCloseInput,
+  error: TerminalError,
+});
+
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerUpsertKeybindingRpc,
@@ -143,4 +185,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitCreateBranchRpc,
   WsGitCheckoutRpc,
   WsGitInitRpc,
+  WsTerminalOpenRpc,
+  WsTerminalWriteRpc,
+  WsTerminalResizeRpc,
+  WsTerminalClearRpc,
+  WsTerminalRestartRpc,
+  WsTerminalCloseRpc,
 );

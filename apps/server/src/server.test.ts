@@ -6,6 +6,7 @@ import {
   KeybindingRule,
   OpenError,
   ResolvedKeybindingRule,
+  TerminalError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -24,6 +25,7 @@ import { GitManager, type GitManagerShape } from "./git/Services/GitManager.ts";
 import { Keybindings, KeybindingsConfigError, type KeybindingsShape } from "./keybindings.ts";
 import { Open, type OpenShape } from "./open.ts";
 import { ProviderHealth, type ProviderHealthShape } from "./provider/Services/ProviderHealth.ts";
+import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/Manager.ts";
 
 const buildAppUnderTest = (options?: {
   config?: Partial<ServerConfigShape>;
@@ -33,6 +35,7 @@ const buildAppUnderTest = (options?: {
     open?: Partial<OpenShape>;
     gitCore?: Partial<GitCoreShape>;
     gitManager?: Partial<GitManagerShape>;
+    terminalManager?: Partial<TerminalManagerShape>;
   };
 }) =>
   Effect.gen(function* () {
@@ -85,6 +88,11 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(GitManager)({
           ...options?.layers?.gitManager,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(TerminalManager)({
+          ...options?.layers?.terminalManager,
         }),
       ),
       Layer.provide(layerConfig),
@@ -643,6 +651,126 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assertFailure(result, gitError);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes websocket rpc terminal methods", () =>
+    Effect.gen(function* () {
+      const snapshot = {
+        threadId: "thread-1",
+        terminalId: "default",
+        cwd: "/tmp/project",
+        status: "running" as const,
+        pid: 1234,
+        history: "",
+        exitCode: null,
+        exitSignal: null,
+        updatedAt: new Date().toISOString(),
+      };
+
+      yield* buildAppUnderTest({
+        layers: {
+          terminalManager: {
+            open: () => Effect.succeed(snapshot),
+            write: () => Effect.void,
+            resize: () => Effect.void,
+            clear: () => Effect.void,
+            restart: () => Effect.succeed(snapshot),
+            close: () => Effect.void,
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+
+      const opened = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.terminalOpen]({
+            threadId: "thread-1",
+            terminalId: "default",
+            cwd: "/tmp/project",
+          }),
+        ),
+      );
+      assert.equal(opened.terminalId, "default");
+
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.terminalWrite]({
+            threadId: "thread-1",
+            terminalId: "default",
+            data: "echo hi\n",
+          }),
+        ),
+      );
+
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.terminalResize]({
+            threadId: "thread-1",
+            terminalId: "default",
+            cols: 120,
+            rows: 40,
+          }),
+        ),
+      );
+
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.terminalClear]({
+            threadId: "thread-1",
+            terminalId: "default",
+          }),
+        ),
+      );
+
+      const restarted = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.terminalRestart]({
+            threadId: "thread-1",
+            terminalId: "default",
+            cwd: "/tmp/project",
+            cols: 120,
+            rows: 40,
+          }),
+        ),
+      );
+      assert.equal(restarted.terminalId, "default");
+
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.terminalClose]({
+            threadId: "thread-1",
+            terminalId: "default",
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes websocket rpc terminal.write errors", () =>
+    Effect.gen(function* () {
+      const terminalError = new TerminalError({ message: "Terminal is not running" });
+      yield* buildAppUnderTest({
+        layers: {
+          terminalManager: {
+            write: () => Effect.fail(terminalError),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.terminalWrite]({
+            threadId: "thread-1",
+            terminalId: "default",
+            data: "echo fail\n",
+          }),
+        ).pipe(Effect.result),
+      );
+
+      assertFailure(result, terminalError);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 });
