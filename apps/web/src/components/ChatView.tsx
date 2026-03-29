@@ -27,6 +27,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { flushSync } from "react-dom";
 import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
@@ -245,6 +246,12 @@ interface PendingPullRequestSetupRequest {
   scriptId: string;
 }
 
+interface TerminalLaunchContext {
+  threadId: ThreadId;
+  cwd: string;
+  worktreePath: string | null;
+}
+
 export default function ChatView({ threadId }: ChatViewProps) {
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
@@ -358,6 +365,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     useState<PullRequestDialogState | null>(null);
   const [pendingPullRequestSetupRequest, setPendingPullRequestSetupRequest] =
     useState<PendingPullRequestSetupRequest | null>(null);
+  const [terminalLaunchContext, setTerminalLaunchContext] = useState<TerminalLaunchContext | null>(
+    null,
+  );
   const [attachmentPreviewHandoffByMessageId, setAttachmentPreviewHandoffByMessageId] = useState<
     Record<string, string[]>
   >({});
@@ -1151,15 +1161,20 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
+  const activeTerminalLaunchContext =
+    terminalLaunchContext?.threadId === activeThreadId ? terminalLaunchContext : null;
+  const terminalDrawerWorktreePath =
+    activeTerminalLaunchContext?.worktreePath ?? activeThreadWorktreePath;
+  const terminalDrawerCwd = activeTerminalLaunchContext?.cwd ?? gitCwd ?? activeProjectCwd;
   const threadTerminalRuntimeEnv = useMemo(() => {
     if (!activeProjectCwd) return {};
     return projectScriptRuntimeEnv({
       project: {
         cwd: activeProjectCwd,
       },
-      worktreePath: activeThreadWorktreePath,
+      worktreePath: terminalDrawerWorktreePath,
     });
-  }, [activeProjectCwd, activeThreadWorktreePath]);
+  }, [activeProjectCwd, terminalDrawerWorktreePath]);
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = branchesQuery.data?.isRepo ?? true;
   const terminalShortcutLabelOptions = useMemo(
@@ -1395,7 +1410,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const targetTerminalId = shouldCreateNewTerminal
         ? `terminal-${randomUUID()}`
         : baseTerminalId;
+      const targetWorktreePath = options?.worktreePath ?? activeThread.worktreePath ?? null;
 
+      setTerminalLaunchContext({
+        threadId: activeThreadId,
+        cwd: targetCwd,
+        worktreePath: targetWorktreePath,
+      });
       setTerminalOpen(true);
       if (shouldCreateNewTerminal) {
         storeNewTerminal(activeThreadId, targetTerminalId);
@@ -1408,7 +1429,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         project: {
           cwd: activeProject.cwd,
         },
-        worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
+        worktreePath: targetWorktreePath,
         ...(options?.env ? { extraEnv: options.env } : {}),
       });
       const openTerminalInput: Parameters<typeof api.terminal.open>[0] = shouldCreateNewTerminal
@@ -2152,6 +2173,47 @@ export default function ChatView({ threadId }: ChatViewProps) {
       : "local";
 
   useEffect(() => {
+    if (!activeThreadId) {
+      setTerminalLaunchContext(null);
+      return;
+    }
+    setTerminalLaunchContext((current) => {
+      if (!current) return current;
+      if (current.threadId === activeThreadId) return current;
+      return null;
+    });
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    if (!activeThreadId || !activeProjectCwd) {
+      return;
+    }
+    setTerminalLaunchContext((current) => {
+      if (!current || current.threadId !== activeThreadId) {
+        return current;
+      }
+      const settledCwd = projectScriptCwd({
+        project: { cwd: activeProjectCwd },
+        worktreePath: activeThreadWorktreePath,
+      });
+      if (
+        settledCwd === current.cwd &&
+        (activeThreadWorktreePath ?? null) === current.worktreePath
+      ) {
+        return null;
+      }
+      return current;
+    });
+  }, [activeProjectCwd, activeThreadId, activeThreadWorktreePath]);
+
+  useEffect(() => {
+    if (terminalState.terminalOpen) {
+      return;
+    }
+    setTerminalLaunchContext((current) => (current?.threadId === activeThreadId ? null : current));
+  }, [activeThreadId, terminalState.terminalOpen]);
+
+  useEffect(() => {
     if (phase !== "running") return;
     const timer = window.setInterval(() => {
       setNowTick(Date.now());
@@ -2622,7 +2684,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
           });
           // Keep local thread state in sync immediately so terminal drawer opens
           // with the worktree cwd/env instead of briefly using the project root.
-          setStoreThreadBranch(threadIdForSend, result.worktree.branch, result.worktree.path);
+          flushSync(() => {
+            setStoreThreadBranch(threadIdForSend, result.worktree.branch, result.worktree.path);
+          });
+        } else if (isLocalDraftThread) {
+          flushSync(() => {
+            setDraftThreadContext(threadIdForSend, {
+              branch: result.worktree.branch,
+              worktreePath: result.worktree.path,
+              envMode: "worktree",
+            });
+          });
         }
       }
 
@@ -4231,7 +4303,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           <ThreadTerminalDrawer
             key={activeThread.id}
             threadId={activeThread.id}
-            cwd={gitCwd ?? activeProject.cwd}
+            cwd={terminalDrawerCwd ?? activeProject.cwd}
             runtimeEnv={threadTerminalRuntimeEnv}
             height={terminalState.terminalHeight}
             terminalIds={terminalState.terminalIds}
