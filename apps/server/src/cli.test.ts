@@ -1,14 +1,22 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { NetService } from "@t3tools/shared/Net";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
+import * as Layer from "effect/Layer";
+import type { Layer as LayerShape } from "effect/Layer";
 import * as CliError from "effect/unstable/cli/CliError";
 import { Command } from "effect/unstable/cli";
 
 import { cli } from "./cli.ts";
 
+const CliRuntimeLayer: LayerShape<
+  Layer.Success<typeof NodeServices.layer> | Layer.Success<typeof NetService.layer>,
+  never,
+  never
+> = Layer.mergeAll(NodeServices.layer, NetService.layer);
+
 const provideCliRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.provide(Layer.mergeAll(NetService.layer, NodeServices.layer)));
+  effect.pipe(Effect.provide(CliRuntimeLayer));
 
 it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("accepts the built-in lowercase log-level flag values", () =>

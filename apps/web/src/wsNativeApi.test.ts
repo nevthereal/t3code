@@ -94,6 +94,9 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     getUpdateState: async () => {
       throw new Error("getUpdateState not implemented in test");
     },
+    checkForUpdate: async () => {
+      throw new Error("checkForUpdate not implemented in test");
+    },
     downloadUpdate: async () => {
       throw new Error("downloadUpdate not implemented in test");
     },

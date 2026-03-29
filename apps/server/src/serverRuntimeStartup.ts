@@ -272,7 +272,7 @@ const makeServerRuntimeStartup = Effect.gen(function* () {
     );
 
     yield* Effect.logDebug("startup phase: starting orchestration reactors");
-    yield* Scope.provide(orchestrationReactor.start, reactorScope);
+    yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
 
     yield* Effect.logDebug("startup phase: preparing welcome payload");
     const welcome = yield* autoBootstrapWelcome;
