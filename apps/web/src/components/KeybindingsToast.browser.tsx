@@ -6,9 +6,10 @@ import {
   type OrchestrationReadModel,
   type ProjectId,
   type ServerConfig,
+  type ServerConfigStreamEvent,
+  type ServerLifecycleStreamEvent,
   type ThreadId,
   type WsWelcomePayload,
-  WS_CHANNELS,
   WS_METHODS,
 } from "@t3tools/contracts";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
@@ -18,6 +19,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { render } from "vitest-browser-react";
 
 import { useComposerDraftStore } from "../composerDraftStore";
+import { __resetNativeApiForTests } from "../nativeApi";
 import { getRouter } from "../router";
 import { useStore } from "../store";
 
@@ -31,9 +33,16 @@ interface TestFixture {
   welcome: WsWelcomePayload;
 }
 
+interface WsRpcRequestEnvelope {
+  _tag: "Request";
+  id: string;
+  tag: string;
+  payload: unknown;
+}
+
 let fixture: TestFixture;
 let wsClient: { send: (data: string) => void } | null = null;
-let pushSequence = 1;
+const streamRequestIds = new Map<string, string>();
 
 const wsLink = ws.link(/ws(s)?:\/\/.*/);
 
@@ -177,33 +186,68 @@ function resolveWsRpc(tag: string): unknown {
   return {};
 }
 
+function sendStreamChunk(method: string, value: unknown) {
+  if (!wsClient) throw new Error("WebSocket client not connected");
+  const requestId = streamRequestIds.get(method);
+  if (!requestId) {
+    throw new Error(`Missing stream subscription for ${method}`);
+  }
+  wsClient.send(
+    JSON.stringify({
+      _tag: "Chunk",
+      requestId,
+      values: [value],
+    }),
+  );
+}
+
 const worker = setupWorker(
   wsLink.addEventListener("connection", ({ client }) => {
     wsClient = client;
-    pushSequence = 1;
-    client.send(
-      JSON.stringify({
-        type: "push",
-        sequence: pushSequence++,
-        channel: WS_CHANNELS.serverWelcome,
-        data: fixture.welcome,
-      }),
-    );
+    streamRequestIds.clear();
     client.addEventListener("message", (event) => {
       const rawData = event.data;
       if (typeof rawData !== "string") return;
-      let request: { id: string; body: { _tag: string; [key: string]: unknown } };
+      let request: WsRpcRequestEnvelope;
       try {
-        request = JSON.parse(rawData);
+        request = JSON.parse(rawData) as WsRpcRequestEnvelope;
       } catch {
         return;
       }
-      const method = request.body?._tag;
-      if (typeof method !== "string") return;
+      if (request._tag !== "Request" || typeof request.tag !== "string") return;
+      if (
+        request.tag === WS_METHODS.subscribeServerLifecycle ||
+        request.tag === WS_METHODS.subscribeServerConfig ||
+        request.tag === WS_METHODS.subscribeGitActionProgress ||
+        request.tag === WS_METHODS.subscribeOrchestrationDomainEvents ||
+        request.tag === WS_METHODS.subscribeTerminalEvents
+      ) {
+        streamRequestIds.set(request.tag, request.id);
+        if (request.tag === WS_METHODS.subscribeServerLifecycle) {
+          sendStreamChunk(request.tag, {
+            version: 1,
+            sequence: 1,
+            type: "welcome",
+            payload: fixture.welcome,
+          } satisfies ServerLifecycleStreamEvent);
+        }
+        if (request.tag === WS_METHODS.subscribeServerConfig) {
+          sendStreamChunk(request.tag, {
+            version: 1,
+            type: "snapshot",
+            config: fixture.serverConfig,
+          } satisfies ServerConfigStreamEvent);
+        }
+        return;
+      }
       client.send(
         JSON.stringify({
-          id: request.id,
-          result: resolveWsRpc(method),
+          _tag: "Exit",
+          requestId: request.id,
+          exit: {
+            _tag: "Success",
+            value: resolveWsRpc(request.tag),
+          },
         }),
       );
     });
@@ -212,19 +256,12 @@ const worker = setupWorker(
   http.get("*/api/project-favicon", () => new HttpResponse(null, { status: 204 })),
 );
 
-function sendServerConfigUpdatedPush(issues: Array<{ kind: string; message: string }>) {
-  if (!wsClient) throw new Error("WebSocket client not connected");
-  wsClient.send(
-    JSON.stringify({
-      type: "push",
-      sequence: pushSequence++,
-      channel: WS_CHANNELS.serverConfigUpdated,
-      data: {
-        issues,
-        providers: fixture.serverConfig.providers,
-      },
-    }),
-  );
+function sendServerConfigUpdatedPush(issues: ServerConfig["issues"]) {
+  sendStreamChunk(WS_METHODS.subscribeServerConfig, {
+    version: 1,
+    type: "keybindingsUpdated",
+    payload: { issues },
+  } satisfies ServerConfigStreamEvent);
 }
 
 function queryToastTitles(): string[] {
@@ -312,9 +349,9 @@ describe("Keybindings update toast", () => {
   });
 
   beforeEach(() => {
+    __resetNativeApiForTests();
     localStorage.clear();
     document.body.innerHTML = "";
-    pushSequence = 1;
     useComposerDraftStore.setState({
       draftsByThreadId: {},
       draftThreadsByThreadId: {},

@@ -37,6 +37,21 @@ let latestServerConfig: ServerConfig | null = null;
 let latestServerConfigUpdated: ServerConfigUpdatedNotification | null = null;
 let latestProvidersUpdated: ServerProviderUpdatedPayload | null = null;
 
+export function __resetWsNativeApiForTests() {
+  if (instance) {
+    instance.transport.dispose();
+    instance = null;
+  }
+  welcomeListeners.clear();
+  gitActionProgressListeners.clear();
+  providersUpdatedListeners.clear();
+  serverConfigUpdatedListeners.clear();
+  latestWelcomePayload = null;
+  latestServerConfig = null;
+  latestServerConfigUpdated = null;
+  latestProvidersUpdated = null;
+}
+
 function emitWelcome(payload: WsWelcomePayload) {
   latestWelcomePayload = payload;
   for (const listener of welcomeListeners) {
