@@ -7,11 +7,11 @@ import {
   GitCommandError,
   KeybindingRule,
   OpenError,
+  TerminalNotRunningError,
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ResolvedKeybindingRule,
-  TerminalError,
   ThreadId,
   WS_METHODS,
   WsRpcGroup,
@@ -1253,7 +1253,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("routes websocket rpc terminal.write errors", () =>
     Effect.gen(function* () {
-      const terminalError = new TerminalError({ message: "Terminal is not running" });
+      const terminalError = new TerminalNotRunningError({
+        threadId: "thread-1",
+        terminalId: "default",
+      });
       yield* buildAppUnderTest({
         layers: {
           terminalManager: {

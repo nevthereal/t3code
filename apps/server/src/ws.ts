@@ -280,9 +280,11 @@ const WsRpcLayer = WsRpcGroup.toLayer(
         Stream.unwrap(
           Effect.gen(function* () {
             const pubsub = yield* PubSub.unbounded<TerminalEvent>();
-            const unsubscribe = yield* terminalManager.subscribe((event) => {
-              PubSub.publishUnsafe(pubsub, event);
-            });
+            const unsubscribe = yield* terminalManager.subscribe((event) =>
+              Effect.sync(() => {
+                PubSub.publishUnsafe(pubsub, event);
+              }),
+            );
             return Stream.fromPubSub(pubsub).pipe(
               Stream.ensuring(Effect.sync(() => unsubscribe())),
             );
