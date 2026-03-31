@@ -45,6 +45,7 @@ const ICON_SOURCE_FILES = [
   "app/root.tsx",
   "src/root.tsx",
   "src/index.html",
+  "app.html",
 ] as const;
 
 // Matches <link ...> tags or object-like icon metadata where rel/href can appear in any order.
