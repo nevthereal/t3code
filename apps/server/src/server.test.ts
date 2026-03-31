@@ -52,6 +52,10 @@ import { ServerLifecycleEvents, type ServerLifecycleEventsShape } from "./server
 import { ServerRuntimeStartup, type ServerRuntimeStartupShape } from "./serverRuntimeStartup.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "./serverSettings.ts";
 import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/Manager.ts";
+import { ProjectFaviconResolverLive } from "./project/Layers/ProjectFaviconResolver.ts";
+import { WorkspaceEntriesLive } from "./workspace/Layers/WorkspaceEntries.ts";
+import { WorkspaceFileSystemLive } from "./workspace/Layers/WorkspaceFileSystem.ts";
+import { WorkspacePathsLive } from "./workspace/Layers/WorkspacePaths.ts";
 
 const defaultProjectId = ProjectId.makeUnsafe("project-default");
 const defaultThreadId = ThreadId.makeUnsafe("thread-default");
@@ -101,6 +105,16 @@ const makeDefaultOrchestrationReadModel = () => {
     ],
   };
 };
+
+const workspaceAndProjectServicesLayer = Layer.mergeAll(
+  WorkspacePathsLive,
+  WorkspaceEntriesLive,
+  WorkspaceFileSystemLive.pipe(
+    Layer.provide(WorkspacePathsLive),
+    Layer.provide(WorkspaceEntriesLive),
+  ),
+  ProjectFaviconResolverLive,
+);
 
 const buildAppUnderTest = (options?: {
   config?: Partial<ServerConfigShape>;
@@ -241,6 +255,7 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.serverRuntimeStartup,
         }),
       ),
+      Layer.provide(workspaceAndProjectServicesLayer),
       Layer.provide(layerConfig),
     );
 
@@ -656,7 +671,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(result._tag === "Failure");
       assertTrue(result.failure._tag === "ProjectSearchEntriesError");
       assertInclude(
-        String(result.failure.cause),
+        result.failure.message,
         "ENOENT: no such file or directory, scandir '/definitely/not/a/real/workspace/path'",
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),

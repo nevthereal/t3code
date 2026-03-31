@@ -9,11 +9,8 @@ import {
 } from "./attachmentPaths";
 import { resolveAttachmentPathById } from "./attachmentStore";
 import { ServerConfig } from "./config";
-import {
-  FALLBACK_PROJECT_FAVICON_SVG,
-  PROJECT_FAVICON_CACHE_CONTROL,
-  resolveProjectFaviconFilePath,
-} from "./projectFavicon";
+import { FALLBACK_PROJECT_FAVICON_SVG, PROJECT_FAVICON_CACHE_CONTROL } from "./projectFavicon";
+import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver";
 
 const HEALTH_ROUTE_PATH = "/health";
 
@@ -98,7 +95,8 @@ export const projectFaviconRouteLayer = HttpRouter.add(
       return HttpServerResponse.text("Missing cwd parameter", { status: 400 });
     }
 
-    const faviconFilePath = yield* Effect.promise(() => resolveProjectFaviconFilePath(projectCwd));
+    const faviconResolver = yield* ProjectFaviconResolver;
+    const faviconFilePath = yield* faviconResolver.resolvePath(projectCwd);
     if (!faviconFilePath) {
       return HttpServerResponse.text(FALLBACK_PROJECT_FAVICON_SVG, {
         status: 200,

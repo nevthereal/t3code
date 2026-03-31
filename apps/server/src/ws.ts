@@ -1,15 +1,4 @@
-import {
-  Effect,
-  FileSystem,
-  Layer,
-  Option,
-  Path,
-  PubSub,
-  Queue,
-  Ref,
-  Schema,
-  Stream,
-} from "effect";
+import { Effect, Layer, Option, PubSub, Queue, Ref, Schema, Stream } from "effect";
 import {
   type GitActionProgressEvent,
   OrchestrationDispatchCommandError,
@@ -43,7 +32,9 @@ import { ServerLifecycleEvents } from "./serverLifecycleEvents";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup";
 import { ServerSettingsService } from "./serverSettings";
 import { TerminalManager } from "./terminal/Services/Manager";
-import { resolveWorkspaceWritePath, searchWorkspaceEntries } from "./workspaceEntries";
+import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries";
+import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem";
+import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePaths";
 
 const WsRpcLayer = WsRpcGroup.toLayer(
   Effect.gen(function* () {
@@ -51,8 +42,6 @@ const WsRpcLayer = WsRpcGroup.toLayer(
     const orchestrationEngine = yield* OrchestrationEngineService;
     const checkpointDiffQuery = yield* CheckpointDiffQuery;
     const keybindings = yield* Keybindings;
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
     const open = yield* Open;
     const gitManager = yield* GitManager;
     const git = yield* GitCore;
@@ -62,6 +51,8 @@ const WsRpcLayer = WsRpcGroup.toLayer(
     const lifecycleEvents = yield* ServerLifecycleEvents;
     const serverSettings = yield* ServerSettingsService;
     const startup = yield* ServerRuntimeStartup;
+    const workspaceEntries = yield* WorkspaceEntries;
+    const workspaceFileSystem = yield* WorkspaceFileSystem;
     const gitActionProgressPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<GitActionProgressEvent>(),
       PubSub.shutdown,
@@ -211,42 +202,27 @@ const WsRpcLayer = WsRpcGroup.toLayer(
       [WS_METHODS.serverGetSettings]: (_input) => serverSettings.getSettings,
       [WS_METHODS.serverUpdateSettings]: ({ patch }) => serverSettings.updateSettings(patch),
       [WS_METHODS.projectsSearchEntries]: (input) =>
-        Effect.tryPromise({
-          try: () => searchWorkspaceEntries(input),
-          catch: (cause) =>
-            new ProjectSearchEntriesError({
-              message: "Failed to search workspace entries",
-              cause,
-            }),
-        }),
+        workspaceEntries.search(input).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProjectSearchEntriesError({
+                message: `Failed to search workspace entries: ${cause.detail}`,
+                cause,
+              }),
+          ),
+        ),
       [WS_METHODS.projectsWriteFile]: (input) =>
-        Effect.gen(function* () {
-          const target = yield* resolveWorkspaceWritePath({
-            workspaceRoot: input.cwd,
-            relativePath: input.relativePath,
-          });
-          yield* fileSystem
-            .makeDirectory(path.dirname(target.absolutePath), { recursive: true })
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectWriteFileError({
-                    message: "Failed to prepare workspace path",
-                    cause,
-                  }),
-              ),
-            );
-          yield* fileSystem.writeFileString(target.absolutePath, input.contents).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProjectWriteFileError({
-                  message: "Failed to write workspace file",
-                  cause,
-                }),
-            ),
-          );
-          return { relativePath: target.relativePath };
-        }),
+        workspaceFileSystem.writeFile(input).pipe(
+          Effect.mapError((cause) => {
+            const message = Schema.is(WorkspacePathOutsideRootError)(cause)
+              ? "Workspace file path must stay within the project root."
+              : "Failed to write workspace file";
+            return new ProjectWriteFileError({
+              message,
+              cause,
+            });
+          }),
+        ),
       [WS_METHODS.shellOpenInEditor]: (input) => open.openInEditor(input),
       [WS_METHODS.gitStatus]: (input) => gitManager.status(input),
       [WS_METHODS.gitPull]: (input) => git.pullCurrentBranch(input.cwd),
