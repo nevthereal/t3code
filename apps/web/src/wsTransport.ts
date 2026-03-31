@@ -20,13 +20,6 @@ interface RequestOptions {
 
 const DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS = Duration.millis(250);
 
-function asError(value: unknown, fallback: string): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  return new Error(fallback);
-}
-
 function formatErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
@@ -54,7 +47,7 @@ export class WsTransport {
     );
 
     this.runtime = ManagedRuntime.make(ProtocolLayer);
-    this.clientScope = Effect.runSync(Scope.make());
+    this.clientScope = this.runtime.runSync(Scope.make());
     this.clientPromise = this.runtime.runPromise(Scope.provide(this.clientScope)(makeWsRpcClient));
   }
 
@@ -66,12 +59,8 @@ export class WsTransport {
       throw new Error("Transport disposed");
     }
 
-    try {
-      const client = await this.clientPromise;
-      return await Effect.runPromise(Effect.suspend(() => execute(client)));
-    } catch (error) {
-      throw asError(error, "Request failed");
-    }
+    const client = await this.clientPromise;
+    return await this.runtime.runPromise(Effect.suspend(() => execute(client)));
   }
 
   subscribe<TValue>(
@@ -85,7 +74,7 @@ export class WsTransport {
 
     let active = true;
     const retryDelayMs = options?.retryDelay ?? DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS;
-    const cancel = Effect.runCallback(
+    const cancel = this.runtime.runCallback(
       Effect.promise(() => this.clientPromise).pipe(
         Effect.flatMap((client) =>
           Stream.runForEach(connect(client), (value) =>
