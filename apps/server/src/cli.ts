@@ -7,7 +7,7 @@ import {
   deriveServerPaths,
   resolveStaticDir,
   ServerConfig,
-  type RuntimeMode,
+  RuntimeMode,
   type ServerConfigShape,
 } from "./config";
 import { readBootstrapEnvelope } from "./bootstrap";
@@ -17,7 +17,7 @@ import { runServer } from "./server";
 const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 
 const BootstrapEnvelopeSchema = Schema.Struct({
-  mode: Schema.optional(Schema.String),
+  mode: Schema.optional(RuntimeMode),
   port: Schema.optional(PortSchema),
   host: Schema.optional(Schema.String),
   t3Home: Schema.optional(Schema.String),
@@ -28,7 +28,7 @@ const BootstrapEnvelopeSchema = Schema.Struct({
   logWebSocketEvents: Schema.optional(Schema.Boolean),
 });
 
-const modeFlag = Flag.choice("mode", ["web", "desktop"]).pipe(
+const modeFlag = Flag.choice("mode", RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
   Flag.optional,
 );
@@ -80,9 +80,8 @@ const logWebSocketEventsFlag = Flag.boolean("log-websocket-events").pipe(
 
 const EnvServerConfig = Config.all({
   logLevel: Config.logLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
-  mode: Config.string("T3CODE_MODE").pipe(
+  mode: Config.schema(RuntimeMode, "T3CODE_MODE").pipe(
     Config.option,
-    Config.map(Option.map((value) => (value === "desktop" ? "desktop" : "web"))),
     Config.map(Option.getOrUndefined),
   ),
   port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
@@ -131,10 +130,6 @@ const resolveOptionPrecedence = <Value>(
   ...values: ReadonlyArray<Option.Option<Value>>
 ): Option.Option<Value> => Option.firstSomeOf(values);
 
-const isValidPort = (value: number): boolean => value >= 1 && value <= 65_535;
-const isRuntimeMode = (value: string): value is RuntimeMode =>
-  value === "web" || value === "desktop";
-
 export const resolveServerConfig = (
   flags: CliServerFlags,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
@@ -152,9 +147,7 @@ export const resolveServerConfig = (
       resolveOptionPrecedence(
         flags.mode,
         Option.fromUndefinedOr(env.mode),
-        Option.flatMap(bootstrapEnvelope, (bootstrap) =>
-          Option.filter(Option.fromUndefinedOr(bootstrap.mode), isRuntimeMode),
-        ),
+        Option.flatMap(bootstrapEnvelope, (bootstrap) => Option.fromUndefinedOr(bootstrap.mode)),
       ),
       () => "web",
     );
@@ -163,9 +156,7 @@ export const resolveServerConfig = (
       resolveOptionPrecedence(
         flags.port,
         Option.fromUndefinedOr(env.port),
-        Option.flatMap(bootstrapEnvelope, (bootstrap) =>
-          Option.filter(Option.fromUndefinedOr(bootstrap.port), isValidPort),
-        ),
+        Option.flatMap(bootstrapEnvelope, (bootstrap) => Option.fromUndefinedOr(bootstrap.port)),
       ),
       {
         onSome: (value) => Effect.succeed(value),

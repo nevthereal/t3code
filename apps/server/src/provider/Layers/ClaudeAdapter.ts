@@ -503,26 +503,11 @@ const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
 ]);
-type ClaudeImageMimeType = "image/gif" | "image/jpeg" | "image/png" | "image/webp";
 const CLAUDE_SETTING_SOURCES = [
   "user",
   "project",
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
-
-type ClaudeContentBlockParam =
-  | {
-      readonly type: "text";
-      readonly text: string;
-    }
-  | {
-      readonly type: "image";
-      readonly source: {
-        readonly type: "base64";
-        readonly media_type: ClaudeImageMimeType;
-        readonly data: string;
-      };
-    };
 
 function buildPromptText(input: ProviderSendTurnInput): string {
   const rawEffort =
@@ -540,7 +525,7 @@ function buildPromptText(input: ProviderSendTurnInput): string {
 }
 
 function buildUserMessage(input: {
-  readonly sdkContent: Array<ClaudeContentBlockParam>;
+  readonly sdkContent: Array<Record<string, unknown>>;
 }): SDKUserMessage {
   return {
     type: "user",
@@ -548,15 +533,15 @@ function buildUserMessage(input: {
     parent_tool_use_id: null,
     message: {
       role: "user",
-      content: input.sdkContent,
+      content: input.sdkContent as unknown as SDKUserMessage["message"]["content"],
     },
-  };
+  } as SDKUserMessage;
 }
 
 function buildClaudeImageContentBlock(input: {
-  readonly mimeType: ClaudeImageMimeType;
+  readonly mimeType: string;
   readonly bytes: Uint8Array;
-}): ClaudeContentBlockParam {
+}): Record<string, unknown> {
   return {
     type: "image",
     source: {
@@ -575,7 +560,7 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   },
 ) {
   const text = buildPromptText(input);
-  const sdkContent: Array<ClaudeContentBlockParam> = [];
+  const sdkContent: Array<Record<string, unknown>> = [];
 
   if (text.length > 0) {
     sdkContent.push({ type: "text", text });
@@ -620,7 +605,7 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
 
     sdkContent.push(
       buildClaudeImageContentBlock({
-        mimeType: attachment.mimeType as ClaudeImageMimeType,
+        mimeType: attachment.mimeType,
         bytes,
       }),
     );

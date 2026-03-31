@@ -6,11 +6,12 @@
  *
  * @module ServerConfig
  */
-import { Effect, FileSystem, Layer, LogLevel, Path, ServiceMap } from "effect";
+import { Effect, FileSystem, Layer, LogLevel, Path, Schema, ServiceMap } from "effect";
 
 export const DEFAULT_PORT = 3773;
 
-export type RuntimeMode = "web" | "desktop";
+export const RuntimeMode = Schema.Literals(["web", "desktop"]);
+export type RuntimeMode = typeof RuntimeMode.Type;
 
 /**
  * ServerDerivedPaths - Derived paths from the base directory.
