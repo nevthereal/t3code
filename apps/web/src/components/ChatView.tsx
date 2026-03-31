@@ -2803,7 +2803,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
         });
       }
 
-      beginLocalDispatch({ preparingWorktree: false });
       const turnAttachments = await turnAttachmentsPromise;
       const bootstrap =
         isLocalDraftThread || baseBranchForWorktree
@@ -2851,6 +2850,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         ...(bootstrap ? { bootstrap } : {}),
         createdAt: messageCreatedAt,
       });
+      beginLocalDispatch({ preparingWorktree: false });
       turnStartSucceeded = true;
     })().catch(async (err: unknown) => {
       if (
