@@ -3,21 +3,19 @@ import {
   DEFAULT_SERVER_SETTINGS,
   type DesktopBridge,
   EventId,
-  ORCHESTRATION_WS_METHODS,
   ProjectId,
   type OrchestrationEvent,
   type ServerConfig,
   type ServerConfigStreamEvent,
   type ServerLifecycleStreamEvent,
   type ServerProvider,
+  type TerminalEvent,
   ThreadId,
-  WS_METHODS,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ContextMenuItem } from "@t3tools/contracts";
 
-const requestMock = vi.fn<(...args: Array<unknown>) => Promise<unknown>>();
 const showContextMenuFallbackMock =
   vi.fn<
     <T extends string>(
@@ -25,106 +23,87 @@ const showContextMenuFallbackMock =
       position?: { x: number; y: number },
     ) => Promise<T | null>
   >();
-const streamListeners = new Map<string, Set<(event: unknown) => void>>();
 
-function registerStreamListener(method: string, listener: (event: unknown) => void) {
-  const listeners = streamListeners.get(method) ?? new Set<(event: unknown) => void>();
+function registerListener<T>(listeners: Set<(event: T) => void>, listener: (event: T) => void) {
   listeners.add(listener);
-  streamListeners.set(method, listeners);
   return () => {
     listeners.delete(listener);
-    if (listeners.size === 0) {
-      streamListeners.delete(method);
-    }
   };
 }
 
-const unaryMethodClient = {
-  [WS_METHODS.serverGetConfig]: (payload: unknown) =>
-    requestMock(WS_METHODS.serverGetConfig, payload),
-  [WS_METHODS.serverRefreshProviders]: (payload: unknown) =>
-    requestMock(WS_METHODS.serverRefreshProviders, payload),
-  [WS_METHODS.serverUpsertKeybinding]: (payload: unknown) =>
-    requestMock(WS_METHODS.serverUpsertKeybinding, payload),
-  [WS_METHODS.serverGetSettings]: (payload: unknown) =>
-    requestMock(WS_METHODS.serverGetSettings, payload),
-  [WS_METHODS.serverUpdateSettings]: (payload: unknown) =>
-    requestMock(WS_METHODS.serverUpdateSettings, payload),
-  [WS_METHODS.projectsSearchEntries]: (payload: unknown) =>
-    requestMock(WS_METHODS.projectsSearchEntries, payload),
-  [WS_METHODS.projectsWriteFile]: (payload: unknown) =>
-    requestMock(WS_METHODS.projectsWriteFile, payload),
-  [WS_METHODS.shellOpenInEditor]: (payload: unknown) =>
-    requestMock(WS_METHODS.shellOpenInEditor, payload),
-  [WS_METHODS.gitPull]: (payload: unknown) => requestMock(WS_METHODS.gitPull, payload),
-  [WS_METHODS.gitStatus]: (payload: unknown) => requestMock(WS_METHODS.gitStatus, payload),
-  [WS_METHODS.gitRunStackedAction]: (payload: unknown) =>
-    requestMock(WS_METHODS.gitRunStackedAction, payload),
-  [WS_METHODS.gitResolvePullRequest]: (payload: unknown) =>
-    requestMock(WS_METHODS.gitResolvePullRequest, payload),
-  [WS_METHODS.gitPreparePullRequestThread]: (payload: unknown) =>
-    requestMock(WS_METHODS.gitPreparePullRequestThread, payload),
-  [WS_METHODS.gitListBranches]: (payload: unknown) =>
-    requestMock(WS_METHODS.gitListBranches, payload),
-  [WS_METHODS.gitCreateWorktree]: (payload: unknown) =>
-    requestMock(WS_METHODS.gitCreateWorktree, payload),
-  [WS_METHODS.gitRemoveWorktree]: (payload: unknown) =>
-    requestMock(WS_METHODS.gitRemoveWorktree, payload),
-  [WS_METHODS.gitCreateBranch]: (payload: unknown) =>
-    requestMock(WS_METHODS.gitCreateBranch, payload),
-  [WS_METHODS.gitCheckout]: (payload: unknown) => requestMock(WS_METHODS.gitCheckout, payload),
-  [WS_METHODS.gitInit]: (payload: unknown) => requestMock(WS_METHODS.gitInit, payload),
-  [WS_METHODS.terminalOpen]: (payload: unknown) => requestMock(WS_METHODS.terminalOpen, payload),
-  [WS_METHODS.terminalWrite]: (payload: unknown) => requestMock(WS_METHODS.terminalWrite, payload),
-  [WS_METHODS.terminalResize]: (payload: unknown) =>
-    requestMock(WS_METHODS.terminalResize, payload),
-  [WS_METHODS.terminalClear]: (payload: unknown) => requestMock(WS_METHODS.terminalClear, payload),
-  [WS_METHODS.terminalRestart]: (payload: unknown) =>
-    requestMock(WS_METHODS.terminalRestart, payload),
-  [WS_METHODS.terminalClose]: (payload: unknown) => requestMock(WS_METHODS.terminalClose, payload),
-  [ORCHESTRATION_WS_METHODS.getSnapshot]: (payload: unknown) =>
-    requestMock(ORCHESTRATION_WS_METHODS.getSnapshot, payload),
-  [ORCHESTRATION_WS_METHODS.dispatchCommand]: (payload: unknown) =>
-    requestMock(ORCHESTRATION_WS_METHODS.dispatchCommand, payload),
-  [ORCHESTRATION_WS_METHODS.getTurnDiff]: (payload: unknown) =>
-    requestMock(ORCHESTRATION_WS_METHODS.getTurnDiff, payload),
-  [ORCHESTRATION_WS_METHODS.getFullThreadDiff]: (payload: unknown) =>
-    requestMock(ORCHESTRATION_WS_METHODS.getFullThreadDiff, payload),
-  [ORCHESTRATION_WS_METHODS.replayEvents]: (payload: unknown) =>
-    requestMock(ORCHESTRATION_WS_METHODS.replayEvents, payload),
+const lifecycleListeners = new Set<(event: ServerLifecycleStreamEvent) => void>();
+const configListeners = new Set<(event: ServerConfigStreamEvent) => void>();
+const gitProgressListeners = new Set<(event: unknown) => void>();
+const terminalEventListeners = new Set<(event: TerminalEvent) => void>();
+const orchestrationEventListeners = new Set<(event: OrchestrationEvent) => void>();
+
+const rpcClientMock = {
+  dispose: vi.fn(),
+  terminal: {
+    open: vi.fn(),
+    write: vi.fn(),
+    resize: vi.fn(),
+    clear: vi.fn(),
+    restart: vi.fn(),
+    close: vi.fn(),
+    onEvent: vi.fn((listener: (event: TerminalEvent) => void) =>
+      registerListener(terminalEventListeners, listener),
+    ),
+  },
+  projects: {
+    searchEntries: vi.fn(),
+    writeFile: vi.fn(),
+  },
+  shell: {
+    openInEditor: vi.fn(),
+  },
+  git: {
+    pull: vi.fn(),
+    status: vi.fn(),
+    runStackedAction: vi.fn(),
+    listBranches: vi.fn(),
+    createWorktree: vi.fn(),
+    removeWorktree: vi.fn(),
+    createBranch: vi.fn(),
+    checkout: vi.fn(),
+    init: vi.fn(),
+    resolvePullRequest: vi.fn(),
+    preparePullRequestThread: vi.fn(),
+    onActionProgress: vi.fn((listener: (event: unknown) => void) =>
+      registerListener(gitProgressListeners, listener),
+    ),
+    subscribeActionProgress: vi.fn((listener: (event: unknown) => void) =>
+      registerListener(gitProgressListeners, listener),
+    ),
+  },
+  server: {
+    getConfig: vi.fn(),
+    refreshProviders: vi.fn(),
+    upsertKeybinding: vi.fn(),
+    getSettings: vi.fn(),
+    updateSettings: vi.fn(),
+    subscribeConfig: vi.fn((listener: (event: ServerConfigStreamEvent) => void) =>
+      registerListener(configListeners, listener),
+    ),
+    subscribeLifecycle: vi.fn((listener: (event: ServerLifecycleStreamEvent) => void) =>
+      registerListener(lifecycleListeners, listener),
+    ),
+  },
+  orchestration: {
+    getSnapshot: vi.fn(),
+    dispatchCommand: vi.fn(),
+    getTurnDiff: vi.fn(),
+    getFullThreadDiff: vi.fn(),
+    replayEvents: vi.fn(),
+    onDomainEvent: vi.fn((listener: (event: OrchestrationEvent) => void) =>
+      registerListener(orchestrationEventListeners, listener),
+    ),
+  },
 };
 
-const streamMethodClient = {
-  [WS_METHODS.subscribeServerLifecycle]: (_payload: unknown) => WS_METHODS.subscribeServerLifecycle,
-  [WS_METHODS.subscribeServerConfig]: (_payload: unknown) => WS_METHODS.subscribeServerConfig,
-  [WS_METHODS.subscribeGitActionProgress]: (_payload: unknown) =>
-    WS_METHODS.subscribeGitActionProgress,
-  [WS_METHODS.subscribeTerminalEvents]: (_payload: unknown) => WS_METHODS.subscribeTerminalEvents,
-  [WS_METHODS.subscribeOrchestrationDomainEvents]: (_payload: unknown) =>
-    WS_METHODS.subscribeOrchestrationDomainEvents,
-};
-
-const subscribeMock = vi.fn<
-  (
-    connect: (client: typeof streamMethodClient) => unknown,
-    listener: (event: unknown) => void,
-  ) => () => void
->((connect, listener) => {
-  const method = connect(streamMethodClient);
-  if (typeof method !== "string") {
-    throw new Error("Expected mocked stream method tag");
-  }
-  return registerStreamListener(method, listener);
-});
-
-vi.mock("./wsTransport", () => {
+vi.mock("./wsRpcClient", () => {
   return {
-    WsTransport: class MockWsTransport {
-      request = (execute: (client: typeof unaryMethodClient) => Promise<unknown>) =>
-        execute(unaryMethodClient);
-      subscribe = subscribeMock;
-      dispose() {}
-    },
+    createWsRpcClient: () => rpcClientMock,
   };
 });
 
@@ -132,22 +111,18 @@ vi.mock("./contextMenuFallback", () => ({
   showContextMenuFallback: showContextMenuFallbackMock,
 }));
 
-function emitStreamEvent(method: string, event: unknown) {
-  const listeners = streamListeners.get(method);
-  if (!listeners) {
-    return;
-  }
+function emitEvent<T>(listeners: Set<(event: T) => void>, event: T) {
   for (const listener of listeners) {
     listener(event);
   }
 }
 
 function emitLifecycleEvent(event: ServerLifecycleStreamEvent) {
-  emitStreamEvent(WS_METHODS.subscribeServerLifecycle, event);
+  emitEvent(lifecycleListeners, event);
 }
 
 function emitServerConfigEvent(event: ServerConfigStreamEvent) {
-  emitStreamEvent(WS_METHODS.subscribeServerConfig, event);
+  emitEvent(configListeners, event);
 }
 
 function getWindowForTest(): Window & typeof globalThis & { desktopBridge?: unknown } {
@@ -211,10 +186,13 @@ const baseServerConfig: ServerConfig = {
 
 beforeEach(() => {
   vi.resetModules();
-  requestMock.mockReset();
+  vi.clearAllMocks();
   showContextMenuFallbackMock.mockReset();
-  subscribeMock.mockClear();
-  streamListeners.clear();
+  lifecycleListeners.clear();
+  configListeners.clear();
+  gitProgressListeners.clear();
+  terminalEventListeners.clear();
+  orchestrationEventListeners.clear();
   Reflect.deleteProperty(getWindowForTest(), "desktopBridge");
 });
 
@@ -225,6 +203,7 @@ afterEach(() => {
 describe("wsNativeApi", () => {
   it("delivers and caches welcome lifecycle events", async () => {
     const { createWsNativeApi, onServerWelcome } = await import("./wsNativeApi");
+    const { wsNativeApiRegistry, wsWelcomeAtom } = await import("./wsNativeApiState");
 
     createWsNativeApi();
     const listener = vi.fn();
@@ -248,6 +227,10 @@ describe("wsNativeApi", () => {
 
     expect(lateListener).toHaveBeenCalledTimes(1);
     expect(lateListener).toHaveBeenCalledWith({
+      cwd: "/tmp/workspace",
+      projectName: "t3-code",
+    });
+    expect(wsNativeApiRegistry.get(wsWelcomeAtom)).toEqual({
       cwd: "/tmp/workspace",
       projectName: "t3-code",
     });
@@ -285,6 +268,7 @@ describe("wsNativeApi", () => {
 
   it("delivers and caches current server config from the config stream snapshot", async () => {
     const { createWsNativeApi, onServerConfigUpdated } = await import("./wsNativeApi");
+    const { serverConfigAtom, wsNativeApiRegistry } = await import("./wsNativeApiState");
 
     const api = createWsNativeApi();
     const listener = vi.fn();
@@ -306,10 +290,11 @@ describe("wsNativeApi", () => {
       },
       "snapshot",
     );
+    expect(wsNativeApiRegistry.get(serverConfigAtom)).toEqual(baseServerConfig);
   });
 
   it("falls back to server.getConfig before the stream cache is populated", async () => {
-    requestMock.mockResolvedValueOnce(baseServerConfig);
+    rpcClientMock.server.getConfig.mockResolvedValueOnce(baseServerConfig);
     const { createWsNativeApi, onServerConfigUpdated } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();
@@ -317,7 +302,7 @@ describe("wsNativeApi", () => {
     onServerConfigUpdated(listener);
 
     await expect(api.server.getConfig()).resolves.toEqual(baseServerConfig);
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverGetConfig, {});
+    expect(rpcClientMock.server.getConfig).toHaveBeenCalledWith();
     expect(listener).toHaveBeenCalledWith(
       {
         issues: [],
@@ -331,6 +316,7 @@ describe("wsNativeApi", () => {
   it("merges config stream updates into the cached server config", async () => {
     const { createWsNativeApi, onServerConfigUpdated, onServerProvidersUpdated } =
       await import("./wsNativeApi");
+    const { providersUpdatedAtom, wsNativeApiRegistry } = await import("./wsNativeApiState");
 
     const api = createWsNativeApi();
     const configListener = vi.fn();
@@ -425,6 +411,7 @@ describe("wsNativeApi", () => {
       "settingsUpdated",
     );
     expect(providersListener).toHaveBeenLastCalledWith({ providers: nextProviders });
+    expect(wsNativeApiRegistry.get(providersUpdatedAtom)).toEqual({ providers: nextProviders });
   });
 
   it("forwards terminal, orchestration, and git progress stream events", async () => {
@@ -446,7 +433,7 @@ describe("wsNativeApi", () => {
       type: "output",
       data: "hello",
     } as const;
-    emitStreamEvent(WS_METHODS.subscribeTerminalEvents, terminalEvent);
+    emitEvent(terminalEventListeners, terminalEvent);
 
     const orchestrationEvent = {
       sequence: 1,
@@ -472,7 +459,7 @@ describe("wsNativeApi", () => {
         updatedAt: "2026-02-24T00:00:00.000Z",
       },
     } satisfies Extract<OrchestrationEvent, { type: "project.created" }>;
-    emitStreamEvent(WS_METHODS.subscribeOrchestrationDomainEvents, orchestrationEvent);
+    emitEvent(orchestrationEventListeners, orchestrationEvent);
 
     const progressEvent = {
       actionId: "action-1",
@@ -482,7 +469,7 @@ describe("wsNativeApi", () => {
       phase: "commit",
       label: "Committing...",
     } as const;
-    emitStreamEvent(WS_METHODS.subscribeGitActionProgress, progressEvent);
+    emitEvent(gitProgressListeners, progressEvent);
 
     expect(onTerminalEvent).toHaveBeenCalledWith(terminalEvent);
     expect(onDomainEvent).toHaveBeenCalledWith(orchestrationEvent);
@@ -490,7 +477,7 @@ describe("wsNativeApi", () => {
   });
 
   it("sends orchestration dispatch commands as the direct RPC payload", async () => {
-    requestMock.mockResolvedValue({ sequence: 1 });
+    rpcClientMock.orchestration.dispatchCommand.mockResolvedValue({ sequence: 1 });
     const { createWsNativeApi } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();
@@ -508,11 +495,11 @@ describe("wsNativeApi", () => {
     } as const;
     await api.orchestration.dispatchCommand(command);
 
-    expect(requestMock).toHaveBeenCalledWith(ORCHESTRATION_WS_METHODS.dispatchCommand, command);
+    expect(rpcClientMock.orchestration.dispatchCommand).toHaveBeenCalledWith(command);
   });
 
   it("forwards workspace file writes to the project RPC", async () => {
-    requestMock.mockResolvedValue({ relativePath: "plan.md" });
+    rpcClientMock.projects.writeFile.mockResolvedValue({ relativePath: "plan.md" });
     const { createWsNativeApi } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();
@@ -522,7 +509,7 @@ describe("wsNativeApi", () => {
       contents: "# Plan\n",
     });
 
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.projectsWriteFile, {
+    expect(rpcClientMock.projects.writeFile).toHaveBeenCalledWith({
       cwd: "/tmp/project",
       relativePath: "plan.md",
       contents: "# Plan\n",
@@ -530,7 +517,7 @@ describe("wsNativeApi", () => {
   });
 
   it("uses no client timeout for git.runStackedAction", async () => {
-    requestMock.mockResolvedValue({
+    rpcClientMock.git.runStackedAction.mockResolvedValue({
       action: "commit",
       branch: { status: "skipped_not_requested" },
       commit: { status: "created", commitSha: "abc1234", subject: "Test" },
@@ -546,7 +533,7 @@ describe("wsNativeApi", () => {
       action: "commit",
     });
 
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.gitRunStackedAction, {
+    expect(rpcClientMock.git.runStackedAction).toHaveBeenCalledWith({
       actionId: "action-1",
       cwd: "/repo",
       action: "commit",
@@ -554,7 +541,7 @@ describe("wsNativeApi", () => {
   });
 
   it("forwards full-thread diff requests to the orchestration RPC", async () => {
-    requestMock.mockResolvedValue({ diff: "patch" });
+    rpcClientMock.orchestration.getFullThreadDiff.mockResolvedValue({ diff: "patch" });
     const { createWsNativeApi } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();
@@ -563,7 +550,7 @@ describe("wsNativeApi", () => {
       toTurnCount: 1,
     });
 
-    expect(requestMock).toHaveBeenCalledWith(ORCHESTRATION_WS_METHODS.getFullThreadDiff, {
+    expect(rpcClientMock.orchestration.getFullThreadDiff).toHaveBeenCalledWith({
       threadId: "thread-1",
       toTurnCount: 1,
     });
@@ -576,7 +563,7 @@ describe("wsNativeApi", () => {
         checkedAt: "2026-01-03T00:00:00.000Z",
       },
     ];
-    requestMock.mockResolvedValue({ providers: nextProviders });
+    rpcClientMock.server.refreshProviders.mockResolvedValue({ providers: nextProviders });
     const { createWsNativeApi, onServerProvidersUpdated } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();
@@ -590,7 +577,7 @@ describe("wsNativeApi", () => {
     onServerProvidersUpdated(listener);
 
     await expect(api.server.refreshProviders()).resolves.toEqual({ providers: nextProviders });
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverRefreshProviders, {});
+    expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith();
     expect(listener).toHaveBeenLastCalledWith({ providers: nextProviders });
     await expect(api.server.getConfig()).resolves.toEqual({
       ...baseServerConfig,
@@ -603,7 +590,7 @@ describe("wsNativeApi", () => {
       ...DEFAULT_SERVER_SETTINGS,
       enableAssistantStreaming: true,
     };
-    requestMock.mockResolvedValue(nextSettings);
+    rpcClientMock.server.updateSettings.mockResolvedValue(nextSettings);
     const { createWsNativeApi, onServerConfigUpdated } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();
@@ -619,8 +606,8 @@ describe("wsNativeApi", () => {
     await expect(api.server.updateSettings({ enableAssistantStreaming: true })).resolves.toEqual(
       nextSettings,
     );
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverUpdateSettings, {
-      patch: { enableAssistantStreaming: true },
+    expect(rpcClientMock.server.updateSettings).toHaveBeenCalledWith({
+      enableAssistantStreaming: true,
     });
     await expect(api.server.getConfig()).resolves.toEqual({
       ...baseServerConfig,

@@ -8,10 +8,23 @@ import {
 
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { createWsRpcClient, type WsRpcClient } from "./wsRpcClient";
-import { ServerConfigUpdateSource, WsNativeApiState } from "./wsNativeApiState";
+import {
+  applyProvidersUpdated,
+  applyServerConfigEvent,
+  applySettingsUpdated,
+  emitGitActionProgress,
+  emitWelcome,
+  getServerConfig,
+  onGitActionProgress,
+  onProvidersUpdated,
+  onServerConfigUpdated as onServerConfigUpdatedState,
+  onWelcome,
+  resetWsNativeApiStateForTests,
+  ServerConfigUpdateSource,
+  setServerConfigSnapshot,
+} from "./wsNativeApiState";
 
 let instance: { api: NativeApi; rpcClient: WsRpcClient; cleanups: Array<() => void> } | null = null;
-let state = new WsNativeApiState();
 
 export function __resetWsNativeApiForTests() {
   if (instance) {
@@ -21,19 +34,18 @@ export function __resetWsNativeApiForTests() {
     instance.rpcClient.dispose();
     instance = null;
   }
-  state.dispose();
-  state = new WsNativeApiState();
+  resetWsNativeApiStateForTests();
 }
 
 async function getServerConfigSnapshot(rpcClient: WsRpcClient) {
-  const latestServerConfig = state.getServerConfig();
+  const latestServerConfig = getServerConfig();
   if (latestServerConfig) {
     return latestServerConfig;
   }
 
   const config = await rpcClient.server.getConfig();
-  state.setServerConfigSnapshot(config);
-  return state.getServerConfig() ?? config;
+  setServerConfigSnapshot(config);
+  return getServerConfig() ?? config;
 }
 
 /**
@@ -41,7 +53,7 @@ async function getServerConfigSnapshot(rpcClient: WsRpcClient) {
  * before this call, the listener fires synchronously with the cached payload.
  */
 export function onServerWelcome(listener: (payload: WsWelcomePayload) => void): () => void {
-  return state.onWelcome(listener);
+  return onWelcome(listener);
 }
 
 /**
@@ -54,13 +66,13 @@ export function onServerConfigUpdated(
     source: ServerConfigUpdateSource,
   ) => void,
 ): () => void {
-  return state.onServerConfigUpdated(listener);
+  return onServerConfigUpdatedState(listener);
 }
 
 export function onServerProvidersUpdated(
   listener: (payload: ServerProviderUpdatedPayload) => void,
 ): () => void {
-  return state.onProvidersUpdated(listener);
+  return onProvidersUpdated(listener);
 }
 
 export function createWsNativeApi(): NativeApi {
@@ -72,14 +84,14 @@ export function createWsNativeApi(): NativeApi {
   const cleanups = [
     rpcClient.server.subscribeLifecycle((event) => {
       if (event.type === "welcome") {
-        state.emitWelcome(event.payload);
+        emitWelcome(event.payload);
       }
     }),
     rpcClient.server.subscribeConfig((event) => {
-      state.applyServerConfigEvent(event);
+      applyServerConfigEvent(event);
     }),
     rpcClient.git.subscribeActionProgress((event: GitActionProgressEvent) => {
-      state.emitGitActionProgress(event);
+      emitGitActionProgress(event);
     }),
   ];
 
@@ -135,7 +147,7 @@ export function createWsNativeApi(): NativeApi {
       init: rpcClient.git.init,
       resolvePullRequest: rpcClient.git.resolvePullRequest,
       preparePullRequestThread: rpcClient.git.preparePullRequestThread,
-      onActionProgress: (callback) => state.onGitActionProgress(callback),
+      onActionProgress: (callback) => onGitActionProgress(callback),
     },
     contextMenu: {
       show: async <T extends string>(
@@ -152,14 +164,14 @@ export function createWsNativeApi(): NativeApi {
       getConfig: () => getServerConfigSnapshot(rpcClient),
       refreshProviders: () =>
         rpcClient.server.refreshProviders().then((payload) => {
-          state.applyProvidersUpdated(payload);
+          applyProvidersUpdated(payload);
           return payload;
         }),
       upsertKeybinding: rpcClient.server.upsertKeybinding,
       getSettings: rpcClient.server.getSettings,
       updateSettings: (patch) =>
         rpcClient.server.updateSettings(patch).then((settings) => {
-          state.applySettingsUpdated(settings);
+          applySettingsUpdated(settings);
           return settings;
         }),
     },

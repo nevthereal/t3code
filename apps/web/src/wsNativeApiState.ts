@@ -11,12 +11,12 @@ import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 export type ServerConfigUpdateSource = ServerConfigStreamEvent["type"];
 
-interface ServerConfigUpdatedNotification {
+export interface ServerConfigUpdatedNotification {
   readonly payload: ServerConfigUpdatedPayload;
   readonly source: ServerConfigUpdateSource;
 }
 
-interface GitActionProgressNotification {
+export interface GitActionProgressNotification {
   readonly event: GitActionProgressEvent;
 }
 
@@ -32,158 +32,160 @@ function toServerConfigUpdatedPayload(config: ServerConfig): ServerConfigUpdated
   };
 }
 
-export class WsNativeApiState {
-  private readonly registry = AtomRegistry.make();
-  private readonly welcomeAtom = makeStateAtom<WsWelcomePayload | null>("ws-server-welcome", null);
-  private readonly serverConfigAtom = makeStateAtom<ServerConfig | null>("ws-server-config", null);
-  private readonly serverConfigUpdatedAtom = makeStateAtom<ServerConfigUpdatedNotification | null>(
-    "ws-server-config-updated",
-    null,
-  );
-  private readonly providersUpdatedAtom = makeStateAtom<ServerProviderUpdatedPayload | null>(
-    "ws-server-providers-updated",
-    null,
-  );
-  private readonly gitActionProgressAtom = makeStateAtom<GitActionProgressNotification | null>(
-    "ws-git-action-progress",
-    null,
-  );
+export let wsNativeApiRegistry = AtomRegistry.make();
 
-  dispose() {
-    this.registry.dispose();
-  }
+export const wsWelcomeAtom = makeStateAtom<WsWelcomePayload | null>("ws-server-welcome", null);
+export const serverConfigAtom = makeStateAtom<ServerConfig | null>("ws-server-config", null);
+export const serverConfigUpdatedAtom = makeStateAtom<ServerConfigUpdatedNotification | null>(
+  "ws-server-config-updated",
+  null,
+);
+export const providersUpdatedAtom = makeStateAtom<ServerProviderUpdatedPayload | null>(
+  "ws-server-providers-updated",
+  null,
+);
+export const gitActionProgressAtom = makeStateAtom<GitActionProgressNotification | null>(
+  "ws-git-action-progress",
+  null,
+);
 
-  getServerConfig(): ServerConfig | null {
-    return this.registry.get(this.serverConfigAtom);
-  }
+export function getServerConfig(): ServerConfig | null {
+  return wsNativeApiRegistry.get(serverConfigAtom);
+}
 
-  setServerConfigSnapshot(config: ServerConfig): void {
-    this.resolveServerConfig(config);
-    this.emitProvidersUpdated({ providers: config.providers });
-    this.emitServerConfigUpdated(toServerConfigUpdatedPayload(config), "snapshot");
-  }
+export function setServerConfigSnapshot(config: ServerConfig): void {
+  resolveServerConfig(config);
+  emitProvidersUpdated({ providers: config.providers });
+  emitServerConfigUpdated(toServerConfigUpdatedPayload(config), "snapshot");
+}
 
-  applyServerConfigEvent(event: ServerConfigStreamEvent): void {
-    switch (event.type) {
-      case "snapshot": {
-        this.setServerConfigSnapshot(event.config);
-        return;
-      }
-      case "keybindingsUpdated": {
-        const latestServerConfig = this.getServerConfig();
-        if (!latestServerConfig) {
-          return;
-        }
-        const nextConfig = {
-          ...latestServerConfig,
-          issues: event.payload.issues,
-        } satisfies ServerConfig;
-        this.resolveServerConfig(nextConfig);
-        this.emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), event.type);
-        return;
-      }
-      case "providerStatuses": {
-        this.applyProvidersUpdated(event.payload);
-        return;
-      }
-      case "settingsUpdated": {
-        this.applySettingsUpdated(event.payload.settings);
-        return;
-      }
-    }
-  }
-
-  applyProvidersUpdated(payload: ServerProviderUpdatedPayload): void {
-    const latestServerConfig = this.getServerConfig();
-    this.emitProvidersUpdated(payload);
-
-    if (!latestServerConfig) {
+export function applyServerConfigEvent(event: ServerConfigStreamEvent): void {
+  switch (event.type) {
+    case "snapshot": {
+      setServerConfigSnapshot(event.config);
       return;
     }
-
-    const nextConfig = {
-      ...latestServerConfig,
-      providers: payload.providers,
-    } satisfies ServerConfig;
-    this.resolveServerConfig(nextConfig);
-    this.emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), "providerStatuses");
-  }
-
-  applySettingsUpdated(settings: ServerSettings): void {
-    const latestServerConfig = this.getServerConfig();
-    if (!latestServerConfig) {
-      return;
-    }
-
-    const nextConfig = {
-      ...latestServerConfig,
-      settings,
-    } satisfies ServerConfig;
-    this.resolveServerConfig(nextConfig);
-    this.emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), "settingsUpdated");
-  }
-
-  emitWelcome(payload: WsWelcomePayload): void {
-    this.registry.set(this.welcomeAtom, payload);
-  }
-
-  emitGitActionProgress(event: GitActionProgressEvent): void {
-    this.registry.set(this.gitActionProgressAtom, { event });
-  }
-
-  onWelcome(listener: (payload: WsWelcomePayload) => void): () => void {
-    return this.subscribeLatest(this.welcomeAtom, listener);
-  }
-
-  onServerConfigUpdated(
-    listener: (payload: ServerConfigUpdatedPayload, source: ServerConfigUpdateSource) => void,
-  ): () => void {
-    return this.subscribeLatest(this.serverConfigUpdatedAtom, (notification) => {
-      listener(notification.payload, notification.source);
-    });
-  }
-
-  onProvidersUpdated(listener: (payload: ServerProviderUpdatedPayload) => void): () => void {
-    return this.subscribeLatest(this.providersUpdatedAtom, listener);
-  }
-
-  onGitActionProgress(listener: (event: GitActionProgressEvent) => void): () => void {
-    return this.registry.subscribe(this.gitActionProgressAtom, (notification) => {
-      if (!notification) {
+    case "keybindingsUpdated": {
+      const latestServerConfig = getServerConfig();
+      if (!latestServerConfig) {
         return;
       }
-      listener(notification.event);
-    });
+      const nextConfig = {
+        ...latestServerConfig,
+        issues: event.payload.issues,
+      } satisfies ServerConfig;
+      resolveServerConfig(nextConfig);
+      emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), event.type);
+      return;
+    }
+    case "providerStatuses": {
+      applyProvidersUpdated(event.payload);
+      return;
+    }
+    case "settingsUpdated": {
+      applySettingsUpdated(event.payload.settings);
+      return;
+    }
+  }
+}
+
+export function applyProvidersUpdated(payload: ServerProviderUpdatedPayload): void {
+  const latestServerConfig = getServerConfig();
+  emitProvidersUpdated(payload);
+
+  if (!latestServerConfig) {
+    return;
   }
 
-  private resolveServerConfig(config: ServerConfig): void {
-    this.registry.set(this.serverConfigAtom, config);
+  const nextConfig = {
+    ...latestServerConfig,
+    providers: payload.providers,
+  } satisfies ServerConfig;
+  resolveServerConfig(nextConfig);
+  emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), "providerStatuses");
+}
+
+export function applySettingsUpdated(settings: ServerSettings): void {
+  const latestServerConfig = getServerConfig();
+  if (!latestServerConfig) {
+    return;
   }
 
-  private emitProvidersUpdated(payload: ServerProviderUpdatedPayload): void {
-    this.registry.set(this.providersUpdatedAtom, payload);
-  }
+  const nextConfig = {
+    ...latestServerConfig,
+    settings,
+  } satisfies ServerConfig;
+  resolveServerConfig(nextConfig);
+  emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), "settingsUpdated");
+}
 
-  private emitServerConfigUpdated(
-    payload: ServerConfigUpdatedPayload,
-    source: ServerConfigUpdateSource,
-  ): void {
-    this.registry.set(this.serverConfigUpdatedAtom, { payload, source });
-  }
+export function emitWelcome(payload: WsWelcomePayload): void {
+  wsNativeApiRegistry.set(wsWelcomeAtom, payload);
+}
 
-  private subscribeLatest<A>(
-    atom: Atom.Atom<A | null>,
-    listener: (value: NonNullable<A>) => void,
-  ): () => void {
-    return this.registry.subscribe(
-      atom,
-      (value) => {
-        if (value === null) {
-          return;
-        }
-        listener(value as NonNullable<A>);
-      },
-      { immediate: true },
-    );
-  }
+export function emitGitActionProgress(event: GitActionProgressEvent): void {
+  wsNativeApiRegistry.set(gitActionProgressAtom, { event });
+}
+
+export function onWelcome(listener: (payload: WsWelcomePayload) => void): () => void {
+  return subscribeLatest(wsWelcomeAtom, listener);
+}
+
+export function onServerConfigUpdated(
+  listener: (payload: ServerConfigUpdatedPayload, source: ServerConfigUpdateSource) => void,
+): () => void {
+  return subscribeLatest(serverConfigUpdatedAtom, (notification) => {
+    listener(notification.payload, notification.source);
+  });
+}
+
+export function onProvidersUpdated(
+  listener: (payload: ServerProviderUpdatedPayload) => void,
+): () => void {
+  return subscribeLatest(providersUpdatedAtom, listener);
+}
+
+export function onGitActionProgress(listener: (event: GitActionProgressEvent) => void): () => void {
+  return wsNativeApiRegistry.subscribe(gitActionProgressAtom, (notification) => {
+    if (!notification) {
+      return;
+    }
+    listener(notification.event);
+  });
+}
+
+export function resetWsNativeApiStateForTests() {
+  wsNativeApiRegistry.dispose();
+  wsNativeApiRegistry = AtomRegistry.make();
+}
+
+function resolveServerConfig(config: ServerConfig): void {
+  wsNativeApiRegistry.set(serverConfigAtom, config);
+}
+
+function emitProvidersUpdated(payload: ServerProviderUpdatedPayload): void {
+  wsNativeApiRegistry.set(providersUpdatedAtom, payload);
+}
+
+function emitServerConfigUpdated(
+  payload: ServerConfigUpdatedPayload,
+  source: ServerConfigUpdateSource,
+): void {
+  wsNativeApiRegistry.set(serverConfigUpdatedAtom, { payload, source });
+}
+
+function subscribeLatest<A>(
+  atom: Atom.Atom<A | null>,
+  listener: (value: NonNullable<A>) => void,
+): () => void {
+  return wsNativeApiRegistry.subscribe(
+    atom,
+    (value) => {
+      if (value === null) {
+        return;
+      }
+      listener(value as NonNullable<A>);
+    },
+    { immediate: true },
+  );
 }
