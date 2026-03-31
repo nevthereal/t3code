@@ -2,6 +2,7 @@ import { WS_METHODS } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WsTransport } from "./wsTransport";
+import { Option } from "effect";
 
 type WsEventType = "open" | "message" | "close" | "error";
 type WsEvent = { code?: number; data?: unknown; reason?: string; type?: string };
@@ -121,10 +122,12 @@ describe("WsTransport", () => {
   it("sends unary RPC requests and resolves successful exits", async () => {
     const transport = new WsTransport("ws://localhost:3020");
 
-    const requestPromise = transport.request(WS_METHODS.serverUpsertKeybinding, {
-      command: "terminal.toggle",
-      key: "ctrl+k",
-    });
+    const requestPromise = transport.request((client) =>
+      client[WS_METHODS.serverUpsertKeybinding]({
+        command: "terminal.toggle",
+        key: "ctrl+k",
+      }),
+    );
 
     await waitFor(() => {
       expect(sockets).toHaveLength(1);
@@ -178,7 +181,10 @@ describe("WsTransport", () => {
     const transport = new WsTransport("ws://localhost:3020");
     const listener = vi.fn();
 
-    const unsubscribe = transport.subscribe(WS_METHODS.subscribeServerLifecycle, {}, listener);
+    const unsubscribe = transport.subscribe(
+      (client) => client[WS_METHODS.subscribeServerLifecycle]({}),
+      listener,
+    );
     await waitFor(() => {
       expect(sockets).toHaveLength(1);
     });
@@ -223,7 +229,10 @@ describe("WsTransport", () => {
     const transport = new WsTransport("ws://localhost:3020");
     const listener = vi.fn();
 
-    const unsubscribe = transport.subscribe(WS_METHODS.subscribeServerLifecycle, {}, listener);
+    const unsubscribe = transport.subscribe(
+      (client) => client[WS_METHODS.subscribeServerLifecycle]({}),
+      listener,
+    );
     await waitFor(() => {
       expect(sockets).toHaveLength(1);
     });
@@ -317,13 +326,13 @@ describe("WsTransport", () => {
     socket.open();
 
     const requestPromise = transport.request(
-      WS_METHODS.gitRunStackedAction,
-      {
-        actionId: "action-1",
-        cwd: "/repo",
-        action: "commit",
-      },
-      { timeoutMs: null },
+      (client) =>
+        client[WS_METHODS.gitRunStackedAction]({
+          actionId: "action-1",
+          cwd: "/repo",
+          action: "commit",
+        }),
+      { timeout: Option.none() },
     );
 
     await waitFor(() => {

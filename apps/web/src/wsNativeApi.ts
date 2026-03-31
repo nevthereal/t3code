@@ -1,165 +1,39 @@
 import {
   type GitActionProgressEvent,
-  ORCHESTRATION_WS_METHODS,
   type ContextMenuItem,
   type NativeApi,
-  type ServerConfig,
-  type ServerConfigStreamEvent,
-  type ServerConfigUpdatedPayload,
-  type ServerLifecycleStreamEvent,
   type ServerProviderUpdatedPayload,
-  type ServerSettings,
-  WS_METHODS,
   type WsWelcomePayload,
 } from "@t3tools/contracts";
 
 import { showContextMenuFallback } from "./contextMenuFallback";
-import { WsTransport } from "./wsTransport";
+import { createWsRpcClient, type WsRpcClient } from "./wsRpcClient";
+import { ServerConfigUpdateSource, WsNativeApiState } from "./wsNativeApiState";
 
-let instance: { api: NativeApi; transport: WsTransport } | null = null;
-const welcomeListeners = new Set<(payload: WsWelcomePayload) => void>();
-const gitActionProgressListeners = new Set<(payload: GitActionProgressEvent) => void>();
-const providersUpdatedListeners = new Set<(payload: ServerProviderUpdatedPayload) => void>();
-
-export type ServerConfigUpdateSource = ServerConfigStreamEvent["type"];
-
-interface ServerConfigUpdatedNotification {
-  readonly payload: ServerConfigUpdatedPayload;
-  readonly source: ServerConfigUpdateSource;
-}
-
-const serverConfigUpdatedListeners = new Set<
-  (payload: ServerConfigUpdatedPayload, source: ServerConfigUpdateSource) => void
->();
-
-let latestWelcomePayload: WsWelcomePayload | null = null;
-let latestServerConfig: ServerConfig | null = null;
-let latestServerConfigUpdated: ServerConfigUpdatedNotification | null = null;
-let latestProvidersUpdated: ServerProviderUpdatedPayload | null = null;
+let instance: { api: NativeApi; rpcClient: WsRpcClient; cleanups: Array<() => void> } | null = null;
+let state = new WsNativeApiState();
 
 export function __resetWsNativeApiForTests() {
   if (instance) {
-    instance.transport.dispose();
+    for (const cleanup of instance.cleanups) {
+      cleanup();
+    }
+    instance.rpcClient.dispose();
     instance = null;
   }
-  welcomeListeners.clear();
-  gitActionProgressListeners.clear();
-  providersUpdatedListeners.clear();
-  serverConfigUpdatedListeners.clear();
-  latestWelcomePayload = null;
-  latestServerConfig = null;
-  latestServerConfigUpdated = null;
-  latestProvidersUpdated = null;
+  state.dispose();
+  state = new WsNativeApiState();
 }
 
-function emitWelcome(payload: WsWelcomePayload) {
-  latestWelcomePayload = payload;
-  for (const listener of welcomeListeners) {
-    try {
-      listener(payload);
-    } catch {
-      // Swallow listener errors.
-    }
-  }
-}
-
-function emitProvidersUpdated(payload: ServerProviderUpdatedPayload) {
-  latestProvidersUpdated = payload;
-  for (const listener of providersUpdatedListeners) {
-    try {
-      listener(payload);
-    } catch {
-      // Swallow listener errors.
-    }
-  }
-}
-
-function resolveServerConfig(config: ServerConfig) {
-  latestServerConfig = config;
-}
-
-function emitServerConfigUpdated(
-  payload: ServerConfigUpdatedPayload,
-  source: ServerConfigUpdateSource,
-) {
-  latestServerConfigUpdated = { payload, source };
-  for (const listener of serverConfigUpdatedListeners) {
-    try {
-      listener(payload, source);
-    } catch {
-      // Swallow listener errors.
-    }
-  }
-}
-
-function toServerConfigUpdatedPayload(config: ServerConfig): ServerConfigUpdatedPayload {
-  return {
-    issues: config.issues,
-    providers: config.providers,
-    settings: config.settings,
-  };
-}
-
-function applyServerConfigEvent(event: ServerConfigStreamEvent) {
-  switch (event.type) {
-    case "snapshot": {
-      resolveServerConfig(event.config);
-      emitProvidersUpdated({ providers: event.config.providers });
-      emitServerConfigUpdated(toServerConfigUpdatedPayload(event.config), event.type);
-      return;
-    }
-    case "keybindingsUpdated": {
-      if (!latestServerConfig) {
-        return;
-      }
-      const nextConfig = {
-        ...latestServerConfig,
-        issues: event.payload.issues,
-      } satisfies ServerConfig;
-      resolveServerConfig(nextConfig);
-      emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), event.type);
-      return;
-    }
-    case "providerStatuses": {
-      if (!latestServerConfig) {
-        return;
-      }
-      const nextConfig = {
-        ...latestServerConfig,
-        providers: event.payload.providers,
-      } satisfies ServerConfig;
-      resolveServerConfig(nextConfig);
-      emitProvidersUpdated({ providers: nextConfig.providers });
-      emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), event.type);
-      return;
-    }
-    case "settingsUpdated": {
-      if (!latestServerConfig) {
-        return;
-      }
-      const nextConfig = {
-        ...latestServerConfig,
-        settings: event.payload.settings,
-      } satisfies ServerConfig;
-      resolveServerConfig(nextConfig);
-      emitServerConfigUpdated(toServerConfigUpdatedPayload(nextConfig), event.type);
-      return;
-    }
-  }
-}
-
-async function getServerConfigSnapshot(transport: WsTransport): Promise<ServerConfig> {
+async function getServerConfigSnapshot(rpcClient: WsRpcClient) {
+  const latestServerConfig = state.getServerConfig();
   if (latestServerConfig) {
     return latestServerConfig;
   }
 
-  const config = await transport.request<ServerConfig>(WS_METHODS.serverGetConfig, {});
-  if (!latestServerConfig) {
-    resolveServerConfig(config);
-    emitProvidersUpdated({ providers: config.providers });
-    emitServerConfigUpdated(toServerConfigUpdatedPayload(config), "snapshot");
-  }
-  return latestServerConfig ?? config;
+  const config = await rpcClient.server.getConfig();
+  state.setServerConfigSnapshot(config);
+  return state.getServerConfig() ?? config;
 }
 
 /**
@@ -167,19 +41,7 @@ async function getServerConfigSnapshot(transport: WsTransport): Promise<ServerCo
  * before this call, the listener fires synchronously with the cached payload.
  */
 export function onServerWelcome(listener: (payload: WsWelcomePayload) => void): () => void {
-  welcomeListeners.add(listener);
-
-  if (latestWelcomePayload) {
-    try {
-      listener(latestWelcomePayload);
-    } catch {
-      // Swallow listener errors.
-    }
-  }
-
-  return () => {
-    welcomeListeners.delete(listener);
-  };
+  return state.onWelcome(listener);
 }
 
 /**
@@ -187,39 +49,18 @@ export function onServerWelcome(listener: (payload: WsWelcomePayload) => void): 
  * late subscribers to avoid missing config validation feedback.
  */
 export function onServerConfigUpdated(
-  listener: (payload: ServerConfigUpdatedPayload, source: ServerConfigUpdateSource) => void,
+  listener: (
+    payload: import("@t3tools/contracts").ServerConfigUpdatedPayload,
+    source: ServerConfigUpdateSource,
+  ) => void,
 ): () => void {
-  serverConfigUpdatedListeners.add(listener);
-
-  if (latestServerConfigUpdated) {
-    try {
-      listener(latestServerConfigUpdated.payload, latestServerConfigUpdated.source);
-    } catch {
-      // Swallow listener errors.
-    }
-  }
-
-  return () => {
-    serverConfigUpdatedListeners.delete(listener);
-  };
+  return state.onServerConfigUpdated(listener);
 }
 
 export function onServerProvidersUpdated(
   listener: (payload: ServerProviderUpdatedPayload) => void,
 ): () => void {
-  providersUpdatedListeners.add(listener);
-
-  if (latestProvidersUpdated) {
-    try {
-      listener(latestProvidersUpdated);
-    } catch {
-      // Swallow listener errors.
-    }
-  }
-
-  return () => {
-    providersUpdatedListeners.delete(listener);
-  };
+  return state.onProvidersUpdated(listener);
 }
 
 export function createWsNativeApi(): NativeApi {
@@ -227,33 +68,20 @@ export function createWsNativeApi(): NativeApi {
     return instance.api;
   }
 
-  const transport = new WsTransport();
-
-  transport.subscribe(
-    WS_METHODS.subscribeServerLifecycle,
-    {},
-    (event: ServerLifecycleStreamEvent) => {
+  const rpcClient = createWsRpcClient();
+  const cleanups = [
+    rpcClient.server.subscribeLifecycle((event) => {
       if (event.type === "welcome") {
-        emitWelcome(event.payload);
+        state.emitWelcome(event.payload);
       }
-    },
-  );
-  transport.subscribe(WS_METHODS.subscribeServerConfig, {}, (event: ServerConfigStreamEvent) => {
-    applyServerConfigEvent(event);
-  });
-  transport.subscribe(
-    WS_METHODS.subscribeGitActionProgress,
-    {},
-    (event: GitActionProgressEvent) => {
-      for (const listener of gitActionProgressListeners) {
-        try {
-          listener(event);
-        } catch {
-          // Swallow listener errors.
-        }
-      }
-    },
-  );
+    }),
+    rpcClient.server.subscribeConfig((event) => {
+      state.applyServerConfigEvent(event);
+    }),
+    rpcClient.git.subscribeActionProgress((event: GitActionProgressEvent) => {
+      state.emitGitActionProgress(event);
+    }),
+  ];
 
   const api: NativeApi = {
     dialogs: {
@@ -269,21 +97,20 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     terminal: {
-      open: (input) => transport.request(WS_METHODS.terminalOpen, input),
-      write: (input) => transport.request(WS_METHODS.terminalWrite, input),
-      resize: (input) => transport.request(WS_METHODS.terminalResize, input),
-      clear: (input) => transport.request(WS_METHODS.terminalClear, input),
-      restart: (input) => transport.request(WS_METHODS.terminalRestart, input),
-      close: (input) => transport.request(WS_METHODS.terminalClose, input),
-      onEvent: (callback) => transport.subscribe(WS_METHODS.subscribeTerminalEvents, {}, callback),
+      open: (input) => rpcClient.terminal.open(input as never),
+      write: (input) => rpcClient.terminal.write(input as never),
+      resize: (input) => rpcClient.terminal.resize(input as never),
+      clear: (input) => rpcClient.terminal.clear(input as never),
+      restart: (input) => rpcClient.terminal.restart(input as never),
+      close: (input) => rpcClient.terminal.close(input as never),
+      onEvent: (callback) => rpcClient.terminal.onEvent(callback),
     },
     projects: {
-      searchEntries: (input) => transport.request(WS_METHODS.projectsSearchEntries, input),
-      writeFile: (input) => transport.request(WS_METHODS.projectsWriteFile, input),
+      searchEntries: rpcClient.projects.searchEntries,
+      writeFile: rpcClient.projects.writeFile,
     },
     shell: {
-      openInEditor: (cwd, editor) =>
-        transport.request(WS_METHODS.shellOpenInEditor, { cwd, editor }),
+      openInEditor: (cwd, editor) => rpcClient.shell.openInEditor({ cwd, editor }),
       openExternal: async (url) => {
         if (window.desktopBridge) {
           const opened = await window.desktopBridge.openExternal(url);
@@ -297,25 +124,18 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     git: {
-      pull: (input) => transport.request(WS_METHODS.gitPull, input),
-      status: (input) => transport.request(WS_METHODS.gitStatus, input),
-      runStackedAction: (input) =>
-        transport.request(WS_METHODS.gitRunStackedAction, input, { timeoutMs: null }),
-      listBranches: (input) => transport.request(WS_METHODS.gitListBranches, input),
-      createWorktree: (input) => transport.request(WS_METHODS.gitCreateWorktree, input),
-      removeWorktree: (input) => transport.request(WS_METHODS.gitRemoveWorktree, input),
-      createBranch: (input) => transport.request(WS_METHODS.gitCreateBranch, input),
-      checkout: (input) => transport.request(WS_METHODS.gitCheckout, input),
-      init: (input) => transport.request(WS_METHODS.gitInit, input),
-      resolvePullRequest: (input) => transport.request(WS_METHODS.gitResolvePullRequest, input),
-      preparePullRequestThread: (input) =>
-        transport.request(WS_METHODS.gitPreparePullRequestThread, input),
-      onActionProgress: (callback) => {
-        gitActionProgressListeners.add(callback);
-        return () => {
-          gitActionProgressListeners.delete(callback);
-        };
-      },
+      pull: rpcClient.git.pull,
+      status: rpcClient.git.status,
+      runStackedAction: rpcClient.git.runStackedAction,
+      listBranches: rpcClient.git.listBranches,
+      createWorktree: rpcClient.git.createWorktree,
+      removeWorktree: rpcClient.git.removeWorktree,
+      createBranch: rpcClient.git.createBranch,
+      checkout: rpcClient.git.checkout,
+      init: rpcClient.git.init,
+      resolvePullRequest: rpcClient.git.resolvePullRequest,
+      preparePullRequestThread: rpcClient.git.preparePullRequestThread,
+      onActionProgress: (callback) => state.onGitActionProgress(callback),
     },
     contextMenu: {
       show: async <T extends string>(
@@ -329,47 +149,33 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     server: {
-      getConfig: () => getServerConfigSnapshot(transport),
+      getConfig: () => getServerConfigSnapshot(rpcClient),
       refreshProviders: () =>
-        transport
-          .request<ServerProviderUpdatedPayload>(WS_METHODS.serverRefreshProviders, {})
-          .then((payload) => {
-            emitProvidersUpdated(payload);
-            applyServerConfigEvent({
-              version: 1,
-              type: "providerStatuses",
-              payload,
-            });
-            return payload;
-          }),
-      upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
-      getSettings: () => transport.request<ServerSettings>(WS_METHODS.serverGetSettings, {}),
+        rpcClient.server.refreshProviders().then((payload) => {
+          state.applyProvidersUpdated(payload);
+          return payload;
+        }),
+      upsertKeybinding: rpcClient.server.upsertKeybinding,
+      getSettings: rpcClient.server.getSettings,
       updateSettings: (patch) =>
-        transport
-          .request<ServerSettings>(WS_METHODS.serverUpdateSettings, { patch })
-          .then((settings) => {
-            applyServerConfigEvent({
-              version: 1,
-              type: "settingsUpdated",
-              payload: { settings },
-            });
-            return settings;
-          }),
+        rpcClient.server.updateSettings(patch).then((settings) => {
+          state.applySettingsUpdated(settings);
+          return settings;
+        }),
     },
     orchestration: {
-      getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot, {}),
-      dispatchCommand: (command) =>
-        transport.request(ORCHESTRATION_WS_METHODS.dispatchCommand, command),
-      getTurnDiff: (input) => transport.request(ORCHESTRATION_WS_METHODS.getTurnDiff, input),
-      getFullThreadDiff: (input) =>
-        transport.request(ORCHESTRATION_WS_METHODS.getFullThreadDiff, input),
+      getSnapshot: rpcClient.orchestration.getSnapshot,
+      dispatchCommand: rpcClient.orchestration.dispatchCommand,
+      getTurnDiff: rpcClient.orchestration.getTurnDiff,
+      getFullThreadDiff: rpcClient.orchestration.getFullThreadDiff,
       replayEvents: (fromSequenceExclusive) =>
-        transport.request(ORCHESTRATION_WS_METHODS.replayEvents, { fromSequenceExclusive }),
-      onDomainEvent: (callback) =>
-        transport.subscribe(WS_METHODS.subscribeOrchestrationDomainEvents, {}, callback),
+        rpcClient.orchestration
+          .replayEvents({ fromSequenceExclusive })
+          .then((events) => [...events]),
+      onDomainEvent: (callback) => rpcClient.orchestration.onDomainEvent(callback),
     },
   };
 
-  instance = { api, transport };
+  instance = { api, rpcClient, cleanups };
   return api;
 }

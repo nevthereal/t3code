@@ -26,9 +26,8 @@ const showContextMenuFallbackMock =
     ) => Promise<T | null>
   >();
 const streamListeners = new Map<string, Set<(event: unknown) => void>>();
-const subscribeMock = vi.fn<
-  (method: string, params: unknown, listener: (event: unknown) => void) => () => void
->((method, _params, listener) => {
+
+function registerStreamListener(method: string, listener: (event: unknown) => void) {
   const listeners = streamListeners.get(method) ?? new Set<(event: unknown) => void>();
   listeners.add(listener);
   streamListeners.set(method, listeners);
@@ -38,12 +37,91 @@ const subscribeMock = vi.fn<
       streamListeners.delete(method);
     }
   };
+}
+
+const unaryMethodClient = {
+  [WS_METHODS.serverGetConfig]: (payload: unknown) =>
+    requestMock(WS_METHODS.serverGetConfig, payload),
+  [WS_METHODS.serverRefreshProviders]: (payload: unknown) =>
+    requestMock(WS_METHODS.serverRefreshProviders, payload),
+  [WS_METHODS.serverUpsertKeybinding]: (payload: unknown) =>
+    requestMock(WS_METHODS.serverUpsertKeybinding, payload),
+  [WS_METHODS.serverGetSettings]: (payload: unknown) =>
+    requestMock(WS_METHODS.serverGetSettings, payload),
+  [WS_METHODS.serverUpdateSettings]: (payload: unknown) =>
+    requestMock(WS_METHODS.serverUpdateSettings, payload),
+  [WS_METHODS.projectsSearchEntries]: (payload: unknown) =>
+    requestMock(WS_METHODS.projectsSearchEntries, payload),
+  [WS_METHODS.projectsWriteFile]: (payload: unknown) =>
+    requestMock(WS_METHODS.projectsWriteFile, payload),
+  [WS_METHODS.shellOpenInEditor]: (payload: unknown) =>
+    requestMock(WS_METHODS.shellOpenInEditor, payload),
+  [WS_METHODS.gitPull]: (payload: unknown) => requestMock(WS_METHODS.gitPull, payload),
+  [WS_METHODS.gitStatus]: (payload: unknown) => requestMock(WS_METHODS.gitStatus, payload),
+  [WS_METHODS.gitRunStackedAction]: (payload: unknown) =>
+    requestMock(WS_METHODS.gitRunStackedAction, payload),
+  [WS_METHODS.gitResolvePullRequest]: (payload: unknown) =>
+    requestMock(WS_METHODS.gitResolvePullRequest, payload),
+  [WS_METHODS.gitPreparePullRequestThread]: (payload: unknown) =>
+    requestMock(WS_METHODS.gitPreparePullRequestThread, payload),
+  [WS_METHODS.gitListBranches]: (payload: unknown) =>
+    requestMock(WS_METHODS.gitListBranches, payload),
+  [WS_METHODS.gitCreateWorktree]: (payload: unknown) =>
+    requestMock(WS_METHODS.gitCreateWorktree, payload),
+  [WS_METHODS.gitRemoveWorktree]: (payload: unknown) =>
+    requestMock(WS_METHODS.gitRemoveWorktree, payload),
+  [WS_METHODS.gitCreateBranch]: (payload: unknown) =>
+    requestMock(WS_METHODS.gitCreateBranch, payload),
+  [WS_METHODS.gitCheckout]: (payload: unknown) => requestMock(WS_METHODS.gitCheckout, payload),
+  [WS_METHODS.gitInit]: (payload: unknown) => requestMock(WS_METHODS.gitInit, payload),
+  [WS_METHODS.terminalOpen]: (payload: unknown) => requestMock(WS_METHODS.terminalOpen, payload),
+  [WS_METHODS.terminalWrite]: (payload: unknown) => requestMock(WS_METHODS.terminalWrite, payload),
+  [WS_METHODS.terminalResize]: (payload: unknown) =>
+    requestMock(WS_METHODS.terminalResize, payload),
+  [WS_METHODS.terminalClear]: (payload: unknown) => requestMock(WS_METHODS.terminalClear, payload),
+  [WS_METHODS.terminalRestart]: (payload: unknown) =>
+    requestMock(WS_METHODS.terminalRestart, payload),
+  [WS_METHODS.terminalClose]: (payload: unknown) => requestMock(WS_METHODS.terminalClose, payload),
+  [ORCHESTRATION_WS_METHODS.getSnapshot]: (payload: unknown) =>
+    requestMock(ORCHESTRATION_WS_METHODS.getSnapshot, payload),
+  [ORCHESTRATION_WS_METHODS.dispatchCommand]: (payload: unknown) =>
+    requestMock(ORCHESTRATION_WS_METHODS.dispatchCommand, payload),
+  [ORCHESTRATION_WS_METHODS.getTurnDiff]: (payload: unknown) =>
+    requestMock(ORCHESTRATION_WS_METHODS.getTurnDiff, payload),
+  [ORCHESTRATION_WS_METHODS.getFullThreadDiff]: (payload: unknown) =>
+    requestMock(ORCHESTRATION_WS_METHODS.getFullThreadDiff, payload),
+  [ORCHESTRATION_WS_METHODS.replayEvents]: (payload: unknown) =>
+    requestMock(ORCHESTRATION_WS_METHODS.replayEvents, payload),
+};
+
+const streamMethodClient = {
+  [WS_METHODS.subscribeServerLifecycle]: (_payload: unknown) => WS_METHODS.subscribeServerLifecycle,
+  [WS_METHODS.subscribeServerConfig]: (_payload: unknown) => WS_METHODS.subscribeServerConfig,
+  [WS_METHODS.subscribeGitActionProgress]: (_payload: unknown) =>
+    WS_METHODS.subscribeGitActionProgress,
+  [WS_METHODS.subscribeTerminalEvents]: (_payload: unknown) => WS_METHODS.subscribeTerminalEvents,
+  [WS_METHODS.subscribeOrchestrationDomainEvents]: (_payload: unknown) =>
+    WS_METHODS.subscribeOrchestrationDomainEvents,
+};
+
+const subscribeMock = vi.fn<
+  (
+    connect: (client: typeof streamMethodClient) => unknown,
+    listener: (event: unknown) => void,
+  ) => () => void
+>((connect, listener) => {
+  const method = connect(streamMethodClient);
+  if (typeof method !== "string") {
+    throw new Error("Expected mocked stream method tag");
+  }
+  return registerStreamListener(method, listener);
 });
 
 vi.mock("./wsTransport", () => {
   return {
     WsTransport: class MockWsTransport {
-      request = requestMock;
+      request = (execute: (client: typeof unaryMethodClient) => Promise<unknown>) =>
+        execute(unaryMethodClient);
       subscribe = subscribeMock;
       dispose() {}
     },
@@ -468,15 +546,11 @@ describe("wsNativeApi", () => {
       action: "commit",
     });
 
-    expect(requestMock).toHaveBeenCalledWith(
-      WS_METHODS.gitRunStackedAction,
-      {
-        actionId: "action-1",
-        cwd: "/repo",
-        action: "commit",
-      },
-      { timeoutMs: null },
-    );
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.gitRunStackedAction, {
+      actionId: "action-1",
+      cwd: "/repo",
+      action: "commit",
+    });
   });
 
   it("forwards full-thread diff requests to the orchestration RPC", async () => {

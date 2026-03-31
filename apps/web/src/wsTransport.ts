@@ -1,4 +1,4 @@
-import { Data, Effect, Exit, Layer, ManagedRuntime, Scope, Stream } from "effect";
+import { Duration, Effect, Exit, Layer, ManagedRuntime, Option, Scope, Stream } from "effect";
 import { WsRpcGroup } from "@t3tools/contracts";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
@@ -7,22 +7,18 @@ import { resolveServerUrl } from "./lib/utils";
 const makeWsRpcClient = RpcClient.make(WsRpcGroup);
 
 type RpcClientFactory = typeof makeWsRpcClient;
-type WsRpcClient = RpcClientFactory extends Effect.Effect<infer Client, any, any> ? Client : never;
-type WsRpcClientMethods = Record<string, (payload: unknown) => unknown>;
+export type WsRpcProtocolClient =
+  RpcClientFactory extends Effect.Effect<infer Client, any, any> ? Client : never;
 
 interface SubscribeOptions {
-  readonly retryDelayMs?: number;
+  readonly retryDelay?: Duration.Input;
 }
 
 interface RequestOptions {
-  readonly timeoutMs?: number | null;
+  readonly timeout?: Option.Option<Duration.Input>;
 }
 
-const DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS = 250;
-
-class WsTransportStreamMethodError extends Data.TaggedError("WsTransportStreamMethodError")<{
-  readonly method: string;
-}> {}
+const DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS = Duration.millis(250);
 
 function asError(value: unknown, fallback: string): Error {
   if (value instanceof Error) {
@@ -41,7 +37,7 @@ function formatErrorMessage(error: unknown): string {
 export class WsTransport {
   private readonly runtime: ManagedRuntime.ManagedRuntime<RpcClient.Protocol, never>;
   private readonly clientScope: Scope.Closeable;
-  private readonly clientPromise: Promise<WsRpcClient>;
+  private readonly clientPromise: Promise<WsRpcProtocolClient>;
   private disposed = false;
 
   constructor(url?: string) {
@@ -62,36 +58,25 @@ export class WsTransport {
     this.clientPromise = this.runtime.runPromise(Scope.provide(this.clientScope)(makeWsRpcClient));
   }
 
-  async request<T = unknown>(
-    method: string,
-    params?: unknown,
+  async request<TSuccess>(
+    execute: (client: WsRpcProtocolClient) => Effect.Effect<TSuccess, Error, never>,
     _options?: RequestOptions,
-  ): Promise<T> {
+  ): Promise<TSuccess> {
     if (this.disposed) {
       throw new Error("Transport disposed");
-    }
-    if (typeof method !== "string" || method.length === 0) {
-      throw new Error("Request method is required");
     }
 
     try {
       const client = await this.clientPromise;
-      const handler = (client as WsRpcClientMethods)[method];
-      if (typeof handler !== "function") {
-        throw new Error(`Unknown RPC method: ${method}`);
-      }
-      return (await Effect.runPromise(
-        Effect.suspend(() => handler(params ?? {}) as Effect.Effect<T>),
-      )) as T;
+      return await Effect.runPromise(Effect.suspend(() => execute(client)));
     } catch (error) {
-      throw asError(error, `Request failed: ${method}`);
+      throw asError(error, "Request failed");
     }
   }
 
-  subscribe<T>(
-    method: string,
-    params: unknown,
-    listener: (value: T) => void,
+  subscribe<TValue>(
+    connect: (client: WsRpcProtocolClient) => Stream.Stream<TValue, Error, never>,
+    listener: (value: TValue) => void,
     options?: SubscribeOptions,
   ): () => void {
     if (this.disposed) {
@@ -99,15 +84,11 @@ export class WsTransport {
     }
 
     let active = true;
-    const retryDelayMs = options?.retryDelayMs ?? DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS;
+    const retryDelayMs = options?.retryDelay ?? DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS;
     const cancel = Effect.runCallback(
       Effect.promise(() => this.clientPromise).pipe(
-        Effect.flatMap((client) => {
-          const handler = (client as WsRpcClientMethods)[method];
-          if (typeof handler !== "function") {
-            return Effect.fail(new WsTransportStreamMethodError({ method }));
-          }
-          return Stream.runForEach(handler(params ?? {}) as Stream.Stream<T, never>, (value) =>
+        Effect.flatMap((client) =>
+          Stream.runForEach(connect(client), (value) =>
             Effect.sync(() => {
               if (!active) {
                 return;
@@ -118,18 +99,17 @@ export class WsTransport {
                 // Swallow listener errors so the stream stays live.
               }
             }),
-          );
-        }),
+          ),
+        ),
         Effect.catch((error) => {
           if (!active || this.disposed) {
             return Effect.interrupt;
           }
           return Effect.sync(() => {
             console.warn("WebSocket RPC subscription disconnected", {
-              method,
               error: formatErrorMessage(error),
             });
-          }).pipe(Effect.andThen(Effect.sleep(`${retryDelayMs} millis`)));
+          }).pipe(Effect.andThen(Effect.sleep(retryDelayMs)));
         }),
         Effect.forever,
       ),
