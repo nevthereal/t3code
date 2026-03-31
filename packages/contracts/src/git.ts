@@ -232,7 +232,7 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
   cause: Schema.optional(Schema.Defect),
 }) {
   override get message(): string {
-    return this.detail;
+    return `Git command failed in ${this.operation}: ${this.command} (${this.cwd}) - ${this.detail}`;
   }
 }
 
@@ -242,7 +242,7 @@ export class GitHubCliError extends Schema.TaggedErrorClass<GitHubCliError>()("G
   cause: Schema.optional(Schema.Defect),
 }) {
   override get message(): string {
-    return this.detail;
+    return `GitHub CLI failed in ${this.operation}: ${this.detail}`;
   }
 }
 
@@ -255,7 +255,7 @@ export class TextGenerationError extends Schema.TaggedErrorClass<TextGenerationE
   },
 ) {
   override get message(): string {
-    return this.detail;
+    return `Text generation failed in ${this.operation}: ${this.detail}`;
   }
 }
 
@@ -265,7 +265,7 @@ export class GitManagerError extends Schema.TaggedErrorClass<GitManagerError>()(
   cause: Schema.optional(Schema.Defect),
 }) {
   override get message(): string {
-    return this.detail;
+    return `Git manager failed in ${this.operation}: ${this.detail}`;
   }
 }
 
