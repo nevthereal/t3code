@@ -10,15 +10,30 @@ import {
   type RuntimeMode,
   type ServerConfigShape,
 } from "./config";
+import { readBootstrapEnvelope } from "./bootstrap";
 import { resolveBaseDir } from "./os-jank";
 import { runServer } from "./server";
+
+const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
+
+const BootstrapEnvelopeSchema = Schema.Struct({
+  mode: Schema.optional(Schema.String),
+  port: Schema.optional(PortSchema),
+  host: Schema.optional(Schema.String),
+  t3Home: Schema.optional(Schema.String),
+  devUrl: Schema.optional(Schema.URLFromString),
+  noBrowser: Schema.optional(Schema.Boolean),
+  authToken: Schema.optional(Schema.String),
+  autoBootstrapProjectFromCwd: Schema.optional(Schema.Boolean),
+  logWebSocketEvents: Schema.optional(Schema.Boolean),
+});
 
 const modeFlag = Flag.choice("mode", ["web", "desktop"]).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
   Flag.optional,
 );
 const portFlag = Flag.integer("port").pipe(
-  Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
+  Flag.withSchema(PortSchema),
   Flag.withDescription("Port for the HTTP/WebSocket server."),
   Flag.optional,
 );
@@ -44,6 +59,11 @@ const authTokenFlag = Flag.string("auth-token").pipe(
   Flag.withAlias("token"),
   Flag.optional,
 );
+const bootstrapFdFlag = Flag.integer("bootstrap-fd").pipe(
+  Flag.withSchema(Schema.Int),
+  Flag.withDescription("Read one-time bootstrap secrets from the given file descriptor."),
+  Flag.optional,
+);
 const autoBootstrapProjectFromCwdFlag = Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
   Flag.withDescription(
     "Create a project for the current working directory on startup when missing.",
@@ -62,12 +82,8 @@ const EnvServerConfig = Config.all({
   logLevel: Config.logLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   mode: Config.string("T3CODE_MODE").pipe(
     Config.option,
-    Config.map(
-      Option.match<RuntimeMode, string>({
-        onNone: () => "web",
-        onSome: (value) => (value === "desktop" ? "desktop" : "web"),
-      }),
-    ),
+    Config.map(Option.map((value) => (value === "desktop" ? "desktop" : "web"))),
+    Config.map(Option.getOrUndefined),
   ),
   port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.string("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
@@ -78,6 +94,10 @@ const EnvServerConfig = Config.all({
     Config.map(Option.getOrUndefined),
   ),
   authToken: Config.string("T3CODE_AUTH_TOKEN").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  bootstrapFd: Config.int("T3CODE_BOOTSTRAP_FD").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
@@ -99,12 +119,21 @@ interface CliServerFlags {
   readonly devUrl: Option.Option<URL>;
   readonly noBrowser: Option.Option<boolean>;
   readonly authToken: Option.Option<string>;
+  readonly bootstrapFd: Option.Option<number>;
   readonly autoBootstrapProjectFromCwd: Option.Option<boolean>;
   readonly logWebSocketEvents: Option.Option<boolean>;
 }
 
 const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
   Option.getOrElse(Option.filter(flag, Boolean), () => envValue);
+
+const resolveOptionPrecedence = <Value>(
+  ...values: ReadonlyArray<Option.Option<Value>>
+): Option.Option<Value> => Option.firstSomeOf(values);
+
+const isValidPort = (value: number): boolean => value >= 1 && value <= 65_535;
+const isRuntimeMode = (value: string): value is RuntimeMode =>
+  value === "web" || value === "desktop";
 
 export const resolveServerConfig = (
   flags: CliServerFlags,
@@ -113,39 +142,115 @@ export const resolveServerConfig = (
   Effect.gen(function* () {
     const { findAvailablePort } = yield* NetService;
     const env = yield* EnvServerConfig;
+    const bootstrapFd = Option.getOrUndefined(flags.bootstrapFd) ?? env.bootstrapFd;
+    const bootstrapEnvelope =
+      bootstrapFd !== undefined
+        ? yield* readBootstrapEnvelope(BootstrapEnvelopeSchema, bootstrapFd)
+        : Option.none();
 
-    const mode = Option.getOrElse(flags.mode, () => env.mode);
+    const mode: RuntimeMode = Option.getOrElse(
+      resolveOptionPrecedence(
+        flags.mode,
+        Option.fromUndefinedOr(env.mode),
+        Option.flatMap(bootstrapEnvelope, (bootstrap) =>
+          Option.filter(Option.fromUndefinedOr(bootstrap.mode), isRuntimeMode),
+        ),
+      ),
+      () => "web",
+    );
 
-    const port = yield* Option.match(flags.port, {
-      onSome: (value) => Effect.succeed(value),
-      onNone: () => {
-        if (env.port) {
-          return Effect.succeed(env.port);
-        }
-        if (mode === "desktop") {
-          return Effect.succeed(DEFAULT_PORT);
-        }
-        return findAvailablePort(DEFAULT_PORT);
+    const port = yield* Option.match(
+      resolveOptionPrecedence(
+        flags.port,
+        Option.fromUndefinedOr(env.port),
+        Option.flatMap(bootstrapEnvelope, (bootstrap) =>
+          Option.filter(Option.fromUndefinedOr(bootstrap.port), isValidPort),
+        ),
+      ),
+      {
+        onSome: (value) => Effect.succeed(value),
+        onNone: () => {
+          if (mode === "desktop") {
+            return Effect.succeed(DEFAULT_PORT);
+          }
+          return findAvailablePort(DEFAULT_PORT);
+        },
       },
-    });
-    const devUrl = Option.getOrElse(flags.devUrl, () => env.devUrl);
-    const baseDir = yield* resolveBaseDir(Option.getOrUndefined(flags.baseDir) ?? env.t3Home);
+    );
+    const devUrl = Option.getOrElse(
+      resolveOptionPrecedence(
+        flags.devUrl,
+        Option.fromUndefinedOr(env.devUrl),
+        Option.flatMap(bootstrapEnvelope, (bootstrap) => Option.fromUndefinedOr(bootstrap.devUrl)),
+      ),
+      () => undefined,
+    );
+    const baseDir = yield* resolveBaseDir(
+      Option.getOrUndefined(
+        resolveOptionPrecedence(
+          flags.baseDir,
+          Option.fromUndefinedOr(env.t3Home),
+          Option.flatMap(bootstrapEnvelope, (bootstrap) =>
+            Option.fromUndefinedOr(bootstrap.t3Home),
+          ),
+        ),
+      ),
+    );
     const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
-    const noBrowser = resolveBooleanFlag(flags.noBrowser, env.noBrowser ?? mode === "desktop");
-    const authToken = Option.getOrUndefined(flags.authToken) ?? env.authToken;
+    const noBrowser = resolveBooleanFlag(
+      flags.noBrowser,
+      Option.getOrElse(
+        resolveOptionPrecedence(
+          Option.fromUndefinedOr(env.noBrowser),
+          Option.flatMap(bootstrapEnvelope, (bootstrap) =>
+            Option.fromUndefinedOr(bootstrap.noBrowser),
+          ),
+        ),
+        () => mode === "desktop",
+      ),
+    );
+    const authToken = Option.getOrUndefined(
+      resolveOptionPrecedence(
+        flags.authToken,
+        Option.fromUndefinedOr(env.authToken),
+        Option.flatMap(bootstrapEnvelope, (bootstrap) =>
+          Option.fromUndefinedOr(bootstrap.authToken),
+        ),
+      ),
+    );
     const autoBootstrapProjectFromCwd = resolveBooleanFlag(
       flags.autoBootstrapProjectFromCwd,
-      env.autoBootstrapProjectFromCwd ?? mode === "web",
+      Option.getOrElse(
+        resolveOptionPrecedence(
+          Option.fromUndefinedOr(env.autoBootstrapProjectFromCwd),
+          Option.flatMap(bootstrapEnvelope, (bootstrap) =>
+            Option.fromUndefinedOr(bootstrap.autoBootstrapProjectFromCwd),
+          ),
+        ),
+        () => mode === "web",
+      ),
     );
     const logWebSocketEvents = resolveBooleanFlag(
       flags.logWebSocketEvents,
-      env.logWebSocketEvents ?? Boolean(devUrl),
+      Option.getOrElse(
+        resolveOptionPrecedence(
+          Option.fromUndefinedOr(env.logWebSocketEvents),
+          Option.flatMap(bootstrapEnvelope, (bootstrap) =>
+            Option.fromUndefinedOr(bootstrap.logWebSocketEvents),
+          ),
+        ),
+        () => Boolean(devUrl),
+      ),
     );
     const staticDir = devUrl ? undefined : yield* resolveStaticDir();
-    const host =
-      Option.getOrUndefined(flags.host) ??
-      env.host ??
-      (mode === "desktop" ? "127.0.0.1" : undefined);
+    const host = Option.getOrElse(
+      resolveOptionPrecedence(
+        flags.host,
+        Option.fromUndefinedOr(env.host),
+        Option.flatMap(bootstrapEnvelope, (bootstrap) => Option.fromUndefinedOr(bootstrap.host)),
+      ),
+      () => (mode === "desktop" ? "127.0.0.1" : undefined),
+    );
     const logLevel = Option.getOrElse(cliLogLevel, () => env.logLevel);
 
     const config: ServerConfigShape = {
@@ -175,6 +280,7 @@ const commandFlags = {
   devUrl: devUrlFlag,
   noBrowser: noBrowserFlag,
   authToken: authTokenFlag,
+  bootstrapFd: bootstrapFdFlag,
   autoBootstrapProjectFromCwd: autoBootstrapProjectFromCwdFlag,
   logWebSocketEvents: logWebSocketEventsFlag,
 } as const;
