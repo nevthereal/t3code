@@ -14,6 +14,7 @@ it.layer(NodeServices.layer)("ServerLoggerLive", (it) => {
         prefix: "t3-server-logger-",
       });
       const derivedPaths = yield* deriveServerPaths(baseDir, undefined);
+      yield* fileSystem.makeDirectory(derivedPaths.logsDir, { recursive: true });
       const configLayer = Layer.succeed(ServerConfig, {
         logLevel: "Warn",
         mode: "web",
