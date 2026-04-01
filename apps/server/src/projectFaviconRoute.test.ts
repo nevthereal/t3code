@@ -175,6 +175,27 @@ describe("tryHandleProjectFaviconRequest", () => {
     });
   });
 
+  it("resolves SvelteKit src/app.html icon hrefs from static assets", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-sveltekit-static-");
+    const iconPath = path.join(projectDir, "static", "brand", "app.svg");
+    fs.mkdirSync(path.dirname(iconPath), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, "src", "app.html"),
+      '<link rel="icon" href="%sveltekit.assets%/brand/app.svg">',
+      "utf8",
+    );
+    fs.writeFileSync(iconPath, "<svg>sveltekit-static</svg>", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.contentType).toContain("image/svg+xml");
+      expect(response.body).toBe("<svg>sveltekit-static</svg>");
+    });
+  });
+
   it("serves a fallback favicon when no icon exists", async () => {
     const projectDir = makeTempDir("t3code-favicon-route-fallback-");
 

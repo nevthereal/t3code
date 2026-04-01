@@ -45,6 +45,7 @@ const ICON_SOURCE_FILES = [
   "app/root.tsx",
   "src/root.tsx",
   "src/index.html",
+  "src/app.html",
   "app.html",
 ] as const;
 
@@ -66,9 +67,24 @@ export const makeProjectFaviconResolver = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  const resolveIconHref = (projectCwd: string, href: string): string[] => {
-    const clean = href.replace(/^\//, "");
-    return [path.join(projectCwd, "public", clean), path.join(projectCwd, clean)];
+  const resolveIconHref = (projectCwd: string, sourcePath: string, href: string): string[] => {
+    if (/^(?:[a-z]+:)?\/\//i.test(href) || href.startsWith("data:")) {
+      return [];
+    }
+
+    const normalizedHref = href.replace(/^%sveltekit\.assets%/, "");
+    const clean = normalizedHref.replace(/^\/+/, "").replace(/^\.\//, "");
+    const projectCandidates = [
+      path.join(projectCwd, "public", clean),
+      path.join(projectCwd, "static", clean),
+      path.join(projectCwd, clean),
+    ];
+
+    if (href.startsWith("/") || href.startsWith("%sveltekit.assets%")) {
+      return projectCandidates;
+    }
+
+    return [path.join(path.dirname(sourcePath), clean), ...projectCandidates];
   };
 
   const isPathWithinProject = (projectCwd: string, candidatePath: string): boolean => {
@@ -117,7 +133,7 @@ export const makeProjectFaviconResolver = Effect.gen(function* () {
       if (!href) {
         continue;
       }
-      const existing = yield* findExistingFile(cwd, resolveIconHref(cwd, href));
+      const existing = yield* findExistingFile(cwd, resolveIconHref(cwd, sourcePath, href));
       if (existing) {
         return existing;
       }
